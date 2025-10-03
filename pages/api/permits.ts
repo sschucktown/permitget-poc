@@ -1,3 +1,4 @@
+// pages/api/permits.ts
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { createClient } from '@supabase/supabase-js';
 
@@ -7,21 +8,52 @@ const supabase = createClient(
 );
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const { address, keyword } = req.query;
-  if (!address || !keyword) return res.status(400).json({ error: 'Need address and keyword' });
+  try {
+    const { address, keyword } = req.query;
 
-  // Call geocode first
-  const geoRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/geocode?address=${encodeURIComponent(String(address))}`);
-  const geo = await geoRes.json();
-  if (!geo?.lat || !geo?.lon) return res.status(404).json({ error: 'Geocoding failed' });
+    if (!address || !keyword) {
+      return res.status(400).json({ error: 'Missing address or keyword' });
+    }
 
-  // Call Supabase RPC
-  const { data, error } = await supabase.rpc('find_permit_resource', {
-    lon: geo.lon,
-    lat: geo.lat,
-    keyword: String(keyword),
-  });
+    // Step 1: Geocode address → lon/lat
+    const geoRes = await fetch(
+      `${req.headers.origin}/api/geocode?address=${encodeURIComponent(String(address))}`
+    );
+    const geo = await geoRes.json();
 
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json(data);
+    if (!geo?.lat || !geo?.lon) {
+      return res.status(404).json({
+        error: 'Geocoding failed',
+        details: geo,
+      });
+    }
+
+    const lon = parseFloat(geo.lon);
+    const lat = parseFloat(geo.lat);
+    const term = String(keyword).toLowerCase();
+
+    // Step 2: Call Supabase RPC
+    const { data, error } = await supabase.rpc('find_permit_resource_v2', {
+      lon,
+      lat,
+      keyword: term,
+    });
+
+    if (error) {
+      console.error('Supabase RPC error:', error);
+      return res.status(500).json({
+        error: 'Supabase RPC failed',
+        details: error.message,
+      });
+    }
+
+    // Step 3: Always return an array
+    return res.status(200).json(data ?? []);
+  } catch (err: any) {
+    console.error('Unhandled error in /api/permits:', err);
+    return res.status(500).json({
+      error: 'Internal server error',
+      details: err.message,
+    });
+  }
 }
