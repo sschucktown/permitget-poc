@@ -15,24 +15,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: 'Missing address or keyword' });
     }
 
-    // Step 1: Geocode address → lon/lat
+    // ✅ Step 1: Geocode directly via Nominatim
     const geoRes = await fetch(
-      `${req.headers.origin}/api/geocode?address=${encodeURIComponent(String(address))}`
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+        String(address)
+      )}`,
+      {
+        headers: {
+          'User-Agent': 'PermitGet/1.0 (your-email@example.com)', // Nominatim requires a UA
+        },
+      }
     );
-    const geo = await geoRes.json();
+
+    if (!geoRes.ok) {
+      return res.status(502).json({ error: 'Geocoding service failed' });
+    }
+
+    const results = await geoRes.json();
+    const geo = results?.[0];
 
     if (!geo?.lat || !geo?.lon) {
-      return res.status(404).json({
-        error: 'Geocoding failed',
-        details: geo,
-      });
+      return res.status(404).json({ error: 'Geocoding failed', details: results });
     }
 
     const lon = parseFloat(geo.lon);
     const lat = parseFloat(geo.lat);
     const term = String(keyword).toLowerCase();
 
-    // Step 2: Call Supabase RPC
+    // ✅ Step 2: Call Supabase RPC
     const { data, error } = await supabase.rpc('find_permit_resource_v2', {
       lon,
       lat,
@@ -47,7 +57,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // Step 3: Always return an array
+    // ✅ Step 3: Always return an array
     return res.status(200).json(data ?? []);
   } catch (err: any) {
     console.error('Unhandled error in /api/permits:', err);
