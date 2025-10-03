@@ -22,7 +22,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       )}`,
       {
         headers: {
-          'User-Agent': 'PermitGet/1.0 (your-email@example.com)', // Nominatim requires a UA
+          'User-Agent': 'PermitGet/1.0 (contact@permitget.com)',
         },
       }
     );
@@ -42,6 +42,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const lat = parseFloat(geo.lat);
     const term = String(keyword).toLowerCase();
 
+    // 🔎 Debug log for Vercel
+    console.log("RPC params", { lon, lat, keyword: term });
+
     // ✅ Step 2: Call Supabase RPC
     const { data, error } = await supabase.rpc('find_permit_resource_v2', {
       lon,
@@ -49,8 +52,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       keyword: term,
     });
 
+    console.log("RPC result", { data, error });
+
     if (error) {
-      console.error('Supabase RPC error:', error);
       return res.status(500).json({
         error: 'Supabase RPC failed',
         details: error.message,
