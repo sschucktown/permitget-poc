@@ -1,3 +1,13 @@
-"scripts": {
-  "dev": "vite"
+{
+  "name": "permitget-poc",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
 }
