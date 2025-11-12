@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PermitGet Lookup</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.4/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+  <div class="bg-white p-6 rounded-xl shadow-md w-full max-w-md">
+    <h1 class="text-2xl font-bold text-center mb-4 text-blue-700">PermitGet Lookup</h1>
+    <form id="lookup-form" class="flex gap-2 mb-4">
+      <input id="address" type="text" placeholder="Enter your address"
+             class="flex-1 border border-gray-300 rounded px-3 py-2 focus:ring focus:ring-blue-200" required />
+      <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2">Search</button>
+    </form>
+    <div id="results" class="space-y-3 text-sm"></div>
+  </div>
+  <script type="module" src="../src/main.js"></script>
+</body>
+</html>
