@@ -21,8 +21,20 @@ async function sb(path, method = "GET", body) {
     body: body ? JSON.stringify(body) : undefined
   });
 
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Supabase error: ${err}`);
+  }
+
+  // Some Supabase requests return 204 with no body
+  const text = await res.text();
+  if (!text) return null;     // <— FIX
+
+  try {
+    return JSON.parse(text);  // <— FIX
+  } catch {
+    return text;
+  }
 }
 
 /* ---------------------------------------------------------
