@@ -50,8 +50,12 @@ function validateURL(url) {
     "cityview"
   ];
 
-  if (lower.endsWith(".gov")) return url;
+  // Accept any URL containing ".gov"
+  if (lower.includes(".gov")) return url;
+
+  // Accept known vendors
   if (vendors.some(v => lower.includes(v))) return url;
+
   return null;
 }
 
