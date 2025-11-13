@@ -28,7 +28,7 @@ Return JSON in this format only:
 `;
 
   const result = await client.responses.create({
-    model: "gpt-4.1",
+    model: "gpt-4.o-mini",
     input: prompt
   });
 
