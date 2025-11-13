@@ -1,4 +1,4 @@
-import { runPortalDiscovery } from "../workers/portalDiscovery.js";
+import { runPortalDiscovery } from "./portalDiscovery.js";
 
 export default async function handler(req, res) {
   try {
