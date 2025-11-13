@@ -1,4 +1,4 @@
-import { runPortalDiscovery } from "./portalDiscovery.js";
+import { runPortalDiscovery } from "../workers/portalDiscovery";
 
 export default async function handler(req, res) {
   console.log("🚀 Portal Discovery API invoked");
