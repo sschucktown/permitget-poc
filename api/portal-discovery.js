@@ -26,11 +26,10 @@ async function sb(path, method = "GET", body) {
 }
 
 /* ---------------------------------------------------------
-   Vendor detection + URL validation
+   URL Extractor / Validator
 --------------------------------------------------------- */
 function extractURL(text) {
   if (!text) return null;
-
   const match = text.match(/https?:\/\/[^\s"']+/i);
   return match ? match[0] : null;
 }
@@ -53,7 +52,6 @@ function validateURL(url) {
 
   if (lower.endsWith(".gov")) return url;
   if (vendors.some(v => lower.includes(v))) return url;
-
   return null;
 }
 
@@ -61,7 +59,6 @@ function detectVendor(url) {
   if (!url) return null;
 
   const lower = url.toLowerCase();
-
   const map = {
     accela: "accela.com",
     enerGov: "energov",
@@ -83,32 +80,34 @@ function detectVendor(url) {
 }
 
 /* ---------------------------------------------------------
-   AI Portal Discovery — plain text only
+   SIMPLEST POSSIBLE AI CALL (your SDK requires this)
 --------------------------------------------------------- */
-async function discoverPortal(name) {
+async function discoverPortal(jurisdictionName) {
   const prompt = `
-  Find the official building permit portal for: "${name}"
+Find the official building permit portal for: "${jurisdictionName}"
 
-  RULES:
-  - Return EXACTLY ONE URL
-  - It must be the direct permitting system portal
-  - Allowed vendors: Accela, EnerGov, eTrakit, CitizenServe, TylerTech, Viewpoint, OpenGov, MyGovernmentOnline
-  - OR any .gov permitting portal
-  - No PDFs, no homepages, no broken links
-  - Respond with ONLY the URL on the first line
-  `;
+RULES:
+- Return ONLY the official permit portal URL.
+- Must be .gov or a known vendor (Accela, EnerGov, eTrakit, CitizenServe, OpenGov, TylerTech, MGO).
+- No PDFs, no homepages, no internal pages.
+- Put the URL on the FIRST line only.
+`;
 
   const response = await openai.responses.create({
     model: "gpt-4o-mini",
-    input: prompt,
-    text: true
+    input: prompt
   });
 
-  return response.output_text;
+  // Your SDK stores output here:
+  const text = response.output_text || 
+               response.output?.[0]?.content?.[0]?.text || 
+               "";
+
+  return text.trim();
 }
 
 /* ---------------------------------------------------------
-   API route
+   API Route
 --------------------------------------------------------- */
 export default async function handler(req, res) {
   try {
@@ -117,17 +116,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing geoid or name" });
     }
 
-    console.log("🚀 Portal discovery for:", geoid, name);
+    console.log("🚀 Running portal discovery for:", geoid, name);
 
-    // 1. AI guess
+    // 1. AI Call
     const raw = await discoverPortal(name);
 
-    // 2. Extract URL from plain text
+    // 2. Extract URL
     const foundURL = extractURL(raw);
     const valid = validateURL(foundURL);
     const vendor = detectVendor(valid);
 
-    // 3. If valid, save to Supabase
+    // 3. Save if valid
     if (valid) {
       await sb("jurisdiction_meta", "POST", {
         jurisdiction_geoid: geoid,
@@ -141,7 +140,7 @@ export default async function handler(req, res) {
 
     return res.json({
       geoid,
-      jurisdiction: name,
+      name,
       discovered_url: valid,
       vendor,
       raw_ai_output: raw
