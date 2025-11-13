@@ -1,36 +1,39 @@
-import OpenAI from "openai";
+// api/portal-discovery.js
+import { runPortalDiscovery } from "../lib/portalDiscoveryPipeline.js";
 
 export default async function handler(req, res) {
-  const { geoid, name } = req.query;
+  try {
+    const { geoid, force } = req.query;
 
-  if (!geoid || !name) {
-    return res.status(400).json({ error: "Missing geoid or name" });
+    if (!geoid) {
+      res.status(400).json({ error: "Missing geoid" });
+      return;
+    }
+
+    const forceRefresh = force === "true" || force === "1";
+
+    const result = await runPortalDiscovery({ geoid, forceRefresh });
+
+    res.status(200).json({
+      geoid,
+      ...result
+    });
+  } catch (err) {
+    console.error("[portal-discovery] error:", err);
+
+    // Handle quota errors cleanly instead of "crash"
+    if (err.status === 429 || err.code === "insufficient_quota") {
+      res.status(503).json({
+        error: "OpenAI quota exceeded",
+        code: "OPENAI_QUOTA",
+        message: err.error?.message || err.message
+      });
+      return;
+    }
+
+    res.status(500).json({
+      error: "Internal error",
+      message: err.message
+    });
   }
-
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  });
-
-  const prompt = `
-You are a permitting portal discovery agent.
-
-Find the OFFICIAL online permitting portal for:
-- Jurisdiction name: ${name}
-- GEOID: ${geoid}
-
-Return JSON in this format only:
-{
-  "portal_url": "...",
-  "portal_status": "working|unknown|offline",
-  "submission_method": "online|pdf|email|in-person",
-  "notes": "..."
-}
-`;
-
-  const result = await client.responses.create({
-    model: "gpt-4.o-mini",
-    input: prompt
-  });
-
-  return res.json(result.output[0].content[0].text);
 }
