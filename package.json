@@ -2,12 +2,24 @@
   "name": "permitget-poc",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
+  "main": "api/portal-discovery.js",
+
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "start": "vite preview"
   },
+
+  "dependencies": {
+    "openai": "^4.0.0"
+  },
+
   "devDependencies": {
     "vite": "^5.0.0"
+  },
+
+  "engines": {
+    "node": ">=18"
   }
 }
