@@ -26,33 +26,40 @@ async function sb(path, method = "GET", body) {
 }
 
 /* ---------------------------------------------------------
-   Validation + vendor detection
+   Vendor detection + URL validation
 --------------------------------------------------------- */
+function extractURL(text) {
+  if (!text) return null;
+
+  const match = text.match(/https?:\/\/[^\s"']+/i);
+  return match ? match[0] : null;
+}
+
 function validateURL(url) {
   if (!url) return null;
-  if (!url.startsWith("http")) return null;
-  if (!url.includes(".")) return null;
 
+  const lower = url.toLowerCase();
   const vendors = [
     "accela.com",
     "energov",
     "etrakit",
     "citizenserve.com",
-    "tylertech.com",
-    "mygovernmentonline.org",
+    "tylertech",
+    "mygovernmentonline",
     "opengov",
     "viewpointcloud",
     "cityview"
   ];
 
-  const lower = url.toLowerCase();
   if (lower.endsWith(".gov")) return url;
   if (vendors.some(v => lower.includes(v))) return url;
+
   return null;
 }
 
 function detectVendor(url) {
   if (!url) return null;
+
   const lower = url.toLowerCase();
 
   const map = {
@@ -60,8 +67,8 @@ function detectVendor(url) {
     enerGov: "energov",
     eTrakit: "etrakit",
     citizenserve: "citizenserve.com",
-    tyler: "tylertech.com",
-    mgo: "mygovernmentonline.org",
+    tyler: "tylertech",
+    mgo: "mygovernmentonline",
     opengov: "opengov",
     viewpoint: "viewpointcloud",
     cityview: "cityview"
@@ -76,38 +83,32 @@ function detectVendor(url) {
 }
 
 /* ---------------------------------------------------------
-   AI Portal Discovery (correct 2025 syntax)
+   AI Portal Discovery — plain text only
 --------------------------------------------------------- */
 async function discoverPortal(name) {
   const prompt = `
-  Find the OFFICIAL building permit portal for: "${name}"
+  Find the official building permit portal for: "${name}"
 
   RULES:
-  - Return exactly one URL
-  - Must be .gov or:
-      Accela, EnerGov, eTrakit, CitizenServe, TylerTech,
-      Viewpoint Cloud, OpenGov, MyGovernmentOnline
-  - Ignore PDFs, contact pages, general homepages
-  - Prefer permit portals / contractor login / permitting systems
-  - Return ONLY strict JSON:
-    { "url": "...", "notes": "..." }
+  - Return EXACTLY ONE URL
+  - It must be the direct permitting system portal
+  - Allowed vendors: Accela, EnerGov, eTrakit, CitizenServe, TylerTech, Viewpoint, OpenGov, MyGovernmentOnline
+  - OR any .gov permitting portal
+  - No PDFs, no homepages, no broken links
+  - Respond with ONLY the URL on the first line
   `;
 
   const response = await openai.responses.create({
     model: "gpt-4o-mini",
     input: prompt,
-    text: { format: "json" }  // ✔ THIS IS CORRECT NOW
+    text: true
   });
 
-  try {
-    return JSON.parse(response.output_text);
-  } catch (e) {
-    return { url: null, notes: "JSON parse failed" };
-  }
+  return response.output_text;
 }
 
 /* ---------------------------------------------------------
-   Main handler
+   API route
 --------------------------------------------------------- */
 export default async function handler(req, res) {
   try {
@@ -118,27 +119,32 @@ export default async function handler(req, res) {
 
     console.log("🚀 Portal discovery for:", geoid, name);
 
-    const ai = await discoverPortal(name);
-    const validated = validateURL(ai.url);
-    const vendor = detectVendor(validated);
+    // 1. AI guess
+    const raw = await discoverPortal(name);
 
-    if (validated) {
+    // 2. Extract URL from plain text
+    const foundURL = extractURL(raw);
+    const valid = validateURL(foundURL);
+    const vendor = detectVendor(valid);
+
+    // 3. If valid, save to Supabase
+    if (valid) {
       await sb("jurisdiction_meta", "POST", {
         jurisdiction_geoid: geoid,
-        portal_url: validated,
+        portal_url: valid,
         vendor_type: vendor,
         submission_method: "online",
         license_required: true,
-        notes: ai?.notes || ""
+        notes: raw
       });
     }
 
     return res.json({
       geoid,
       jurisdiction: name,
-      discovered_url: validated,
+      discovered_url: valid,
       vendor,
-      raw: ai
+      raw_ai_output: raw
     });
 
   } catch (err) {
