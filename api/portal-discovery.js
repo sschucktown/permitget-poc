@@ -9,7 +9,7 @@ import OpenAI from "openai";
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
-const DAILY_AI_LIMIT = parseInt(process.env.DAILY_AI_LIMIT || "25", 10); // safety cap
+const DAILY_AI_LIMIT = parseInt(process.env.DAILY_AI_LIMIT || "25", 10);
 const CRON_SECRET = process.env.CRON_SECRET || null;
 
 if (!OPENAI_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
@@ -35,23 +35,20 @@ async function sb(path, method = "GET", body) {
     throw new Error(`Supabase Error: ${errText}`);
   }
 
-  // Some writes may return empty body; guard parse.
   try {
-    return await res.json();
+    return await res.json(); // may throw if no JSON body
   } catch {
     return null;
   }
 }
 
-// ---------- URL utilities ----------
+// ---------- URL Validation ----------
 function validateURL(url) {
   if (!url) return null;
   const trimmed = url.trim();
   if (!trimmed.startsWith("http")) return null;
-  if (!trimmed.includes(".")) return null;
 
   const lower = trimmed.toLowerCase();
-
   const vendorKeywords = [
     "accela",
     "energov",
@@ -70,6 +67,7 @@ function validateURL(url) {
   return null;
 }
 
+// ---------- Vendor Detection ----------
 function detectVendor(url) {
   if (!url) return "unknown";
   const lower = url.toLowerCase();
@@ -81,7 +79,7 @@ function detectVendor(url) {
     citizenserve: "citizenserve",
     tyler: "tylertech",
     myGOV: "mygovernmentonline",
-    openGov: "opengov",
+    opengov: "opengov",
     viewpoint: "viewpoint",
     cityview: "cityview"
   };
@@ -94,14 +92,12 @@ function detectVendor(url) {
   return "unknown";
 }
 
-// ---------- JSON extractor from model text ----------
+// ---------- Extract JSON safely from AI ----------
 function extractJsonFromText(text) {
   if (!text) return null;
 
-  // Try ```json ... ``` block first
   let match = text.match(/```json([\s\S]*?)```/i);
   if (!match) {
-    // Try generic ``` ... ```
     match = text.match(/```([\s\S]*?)```/);
   }
 
@@ -114,32 +110,30 @@ function extractJsonFromText(text) {
   }
 }
 
-// ---------- AI call ----------
+// ---------- AI Portal Discovery ----------
 async function discoverPortalWithAI(readableName) {
   const prompt = `
 You are a building permit portal locator.
 
-Return ONLY a JSON object, nothing else, like:
+Return ONLY a JSON object, like:
 {
   "url": "https://example.gov/permits",
-  "notes": "Short explanation of why this is the official portal."
+  "notes": "Official building permit portal."
 }
 
 Rules:
-- It MUST be the official online building permit portal for: "${readableName}".
-- Prefer pages that say things like "online permits", "contractor login", "permit portal", or "apply for building permits".
-- Ignore PDF files, broken links, or random documents.
-- Ignore general city homepages unless they are clearly the only permit portal.
-- The "url" should be the most direct portal page, not the generic city homepage.
-  `;
+- Must be the official online permit portal for: "${readableName}".
+- Prefer pages that say: "permit portal", "contractor login", "apply for permits".
+- Ignore PDFs and generic homepages unless they clearly contain the permit portal.
+`;
 
   const response = await openai.responses.create({
     model: "gpt-4.1-mini",
     input: prompt
   });
 
-  // Responses API: grab text from first output
   let textOutput = "";
+
   try {
     if (response.output && response.output.length > 0) {
       const first = response.output[0];
@@ -152,17 +146,16 @@ Rules:
     textOutput = "";
   }
 
-  // Fallback if client exposes output_text
-  if (!textOutput && response.output_text) {
-    textOutput = response.output_text;
-  }
+  // fallback
+  if (!textOutput && response.output_text) textOutput = response.output_text;
 
   const parsed = extractJsonFromText(textOutput);
 
   if (parsed && typeof parsed === "object") {
     return {
       url: parsed.url || null,
-      notes: parsed.notes || "Parsed from JSON"
+      notes: parsed.notes || "Parsed from structured JSON",
+      raw: textOutput
     };
   }
 
@@ -173,12 +166,18 @@ Rules:
   };
 }
 
-// ---------- MAIN HANDLER ----------
+// ---------------------------------------------------------------------------
+// MAIN HANDLER
+// ---------------------------------------------------------------------------
 export default async function handler(req, res) {
   try {
-    // Optional: protect this endpoint when CRON_SECRET is set
+    // ---------------- AUTH BLOCK (correct Node.js version) ----------------
     if (CRON_SECRET) {
-      const authHeader = req.headers["authorization"] || "";
+      const authHeader =
+        req.headers["authorization"] ||
+        req.headers["Authorization"] ||
+        "";
+
       if (authHeader !== `Bearer ${CRON_SECRET}`) {
         return res.status(401).json({ error: "Unauthorized" });
       }
@@ -188,37 +187,40 @@ export default async function handler(req, res) {
 
     const today = new Date().toISOString().slice(0, 10);
 
-    // ---- Check daily AI usage ----
-    const usageRows = await sb(
-      `portal_ai_usage?day=eq.${today}&limit=1`
-    );
-    const used = usageRows && usageRows[0] ? usageRows[0].count : 0;
+    // ---------- Check daily usage ----------
+    const usageRows = await sb(`portal_ai_usage?day=eq.${today}&limit=1`);
+    const used = usageRows?.[0]?.count || 0;
 
     if (used >= DAILY_AI_LIMIT) {
       console.log(`🛑 Daily AI limit reached (${used}/${DAILY_AI_LIMIT}).`);
-      return res.status(200).json({ status: "daily_limit_reached", used, DAILY_AI_LIMIT });
+      return res.status(200).json({
+        status: "daily_limit_reached",
+        used,
+        DAILY_AI_LIMIT
+      });
     }
 
-    // ---- Get next jurisdiction without portal ----
+    // ---------- Pull next jurisdiction needing portal discovery ----------
     const pending = await sb("jurisdictions_without_portals?limit=1");
+
     if (!pending || pending.length === 0) {
-      console.log("✨ No jurisdictions left without portals. Idle.");
-      return res.status(200).json({ status: "idle", message: "No jurisdictions_without_portals remaining." });
+      console.log("✨ All jurisdictions processed.");
+      return res.status(200).json({ status: "idle", message: "No remaining jurisdictions." });
     }
 
     const jur = pending[0];
     const readableName = `${jur.name}, ${jur.statefp}`;
 
-    console.log("🔍 Discovering portal for:", jur.geoid, readableName);
+    console.log("🔍 Discovering portal:", jur.geoid, readableName);
 
-    // ---- AI discovery ----
+    // ---------- AI Lookup ----------
     const ai = await discoverPortalWithAI(readableName);
     const validUrl = validateURL(ai.url);
     const vendor = detectVendor(validUrl);
 
     console.log("AI candidate:", ai);
 
-    // ---- Upsert jurisdiction_meta ----
+    // ---------- Save to jurisdiction_meta ----------
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: jur.geoid,
       portal_url: validUrl,
@@ -226,11 +228,11 @@ export default async function handler(req, res) {
       submission_method: validUrl ? "online" : "unknown",
       license_required: true,
       notes: ai.notes || "",
-      raw_ai_output: ai,
+      raw_ai_output: ai,        // JSONB SAFE
       updated_at: new Date().toISOString()
     });
 
-    // ---- Update daily usage ----
+    // ---------- Update usage counter ----------
     if (!usageRows || usageRows.length === 0) {
       await sb("portal_ai_usage", "POST", {
         day: today,
