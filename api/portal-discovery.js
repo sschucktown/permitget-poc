@@ -1,7 +1,4 @@
 // api/portal-discovery.js
-export const config = {
-  runtime: nodejs"
-};
 
 import OpenAI from "openai";
 
@@ -100,16 +97,15 @@ function detectVendor(url) {
 // ---------- AI lookup ----------
 async function discoverPortalWithAI(readableName) {
   const prompt = `
-Return ONLY this shape:
+Return ONLY:
 
 {
   "url": "https://example.gov/permits",
   "notes": "Official building permit portal."
 }
 
-Find the official building permit portal for: "${readableName}".
-Ignore PDFs, generic homepages, and broken links.
-Pick the most direct and official permit portal page.
+Target jurisdiction: "${readableName}".
+Ignore PDFs, general homepages, or non-official pages.
   `;
 
   const response = await openai.responses.create({
@@ -151,7 +147,7 @@ Pick the most direct and official permit portal page.
 // ---------------------------------------------------------------------------
 export default async function handler(req, res) {
   try {
-    // ---------- FIXED AUTH BLOCK ----------
+    // ---------- Auth ----------
     if (CRON_SECRET) {
       const authHeader =
         req.headers["authorization"] ||
@@ -205,7 +201,7 @@ export default async function handler(req, res) {
       submission_method: validUrl ? "online" : "unknown",
       license_required: true,
       notes: ai.notes,
-      raw_ai_output: ai, // JSONB safe
+      raw_ai_output: ai,
       updated_at: new Date().toISOString()
     });
 
