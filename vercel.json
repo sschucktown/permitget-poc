@@ -11,7 +11,7 @@
   "crons": [
     {
       "path": "/api/portal-discovery",
-      "schedule": "0 * * * *"
+      "schedule": "*/20 * * * *"
     }
   ]
 }
