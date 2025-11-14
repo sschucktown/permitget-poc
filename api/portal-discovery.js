@@ -1,68 +1,71 @@
 // api/portal-discovery.js
 export const config = {
-  runtime: "nodejs",
+  runtime: "nodejs18.x"
 };
 
 import OpenAI from "openai";
 
-// --------------------------
-// Supabase helper
-// --------------------------
-async function sb(path, method = "GET", body = null) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${path}`;
+// ---------- ENV ----------
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+const DAILY_AI_LIMIT = parseInt(process.env.DAILY_AI_LIMIT || "25"); // safety cap
 
-  const res = await fetch(url, {
+const openai = new OpenAI({ apiKey: OPENAI_KEY });
+
+// ---------- SUPABASE FETCH WRAPPER ----------
+async function sb(path, method = "GET", body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
-      apikey: process.env.SUPABASE_SERVICE_ROLE,
-      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE}`,
-      "Content-Type": "application/json",
+      apikey: SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+      "Content-Type": "application/json"
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? JSON.stringify(body) : undefined
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase Error: ${text}`);
+    const err = await res.text();
+    throw new Error(`Supabase Error: ${err}`);
   }
 
-  if (res.status === 204) return null;
-  return res.json();
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
-// --------------------------
-// URL sanitation & vendor detection
-// --------------------------
-function normalizeURL(raw) {
-  if (!raw) return null;
-  let url = raw.trim();
-
-  url = url.replace(/^```json/i, "")
-           .replace(/^```/, "")
-           .replace(/```$/, "")
-           .trim();
-
+// ---------- URL VALIDATOR ----------
+function validateURL(url) {
+  if (!url) return null;
   if (!url.startsWith("http")) return null;
   if (!url.includes(".")) return null;
 
-  if (url.endsWith(".gov")) return url;
-
-  const vendorDomains = [
-    "accela", "energov", "etrakit",
-    "citizenserve", "tylertech",
-    "mygovernmentonline", "opengov",
-    "viewpointcloud", "cityview"
+  const vendors = [
+    "accela",
+    "energov",
+    "etrakit",
+    "citizenserve",
+    "tylertech",
+    "mygovernmentonline",
+    "opengov",
+    "viewpoint",
+    "cityview"
   ];
 
-  if (vendorDomains.some(v => url.toLowerCase().includes(v))) {
-    return url;
-  }
+  const l = url.toLowerCase();
+
+  if (l.endsWith(".gov")) return url;
+  if (vendors.some(v => l.includes(v))) return url;
 
   return null;
 }
 
+// ---------- VENDOR DETECTOR ----------
 function detectVendor(url) {
-  if (!url) return null;
+  if (!url) return "unknown";
 
   const map = {
     accela: "accela",
@@ -70,111 +73,127 @@ function detectVendor(url) {
     eTrakit: "etrakit",
     citizenserve: "citizenserve",
     tyler: "tylertech",
-    MGO: "mygovernmentonline",
+    myGOV: "mygovernmentonline",
     openGov: "opengov",
-    viewpoint: "viewpointcloud",
-    cityview: "cityview",
+    viewpoint: "viewpoint",
+    cityview: "cityview"
   };
 
-  for (const [vendor, keyword] of Object.entries(map)) {
-    if (url.toLowerCase().includes(keyword)) return vendor;
+  const l = url.toLowerCase();
+  for (const [v, key] of Object.entries(map)) {
+    if (l.includes(key)) return v;
   }
 
-  if (url.endsWith(".gov")) return "municipal";
+  if (l.endsWith(".gov")) return "municipal";
   return "unknown";
 }
 
-// --------------------------
-// AI Portal Lookup
-// --------------------------
-async function discoverPortalWithAI(jurisdictionName) {
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
+// ---------- AI CALL ----------
+async function discoverPortalWithAI(name, geoid) {
   const prompt = `
-Find the official building permit portal for: "${jurisdictionName}"
+You are a building permit portal finder.
 
-RULES:
-- Return ONLY a URL, nothing else.
-- Must be a .gov or a known vendor portal (Accela, EnerGov, eTrakit, CitizenServe, Tyler, OpenGov, MGO, ViewpointCloud)
-- No PDFs
-- No homepage links
-- Prefer contractor login, permit portal, or permitting system
-- Output EXACTLY one raw URL string
-`;
+Return ONLY JSON:
+{
+  "url": "...",
+  "notes": "..."
+}
 
-  const response = await client.responses.create({
-    model: "gpt-4o-mini",
+Rules:
+- Must be an OFFICIAL permit portal.
+- Prefer “permit portal”, “contractor login”, “online permitting”.
+- Ignore PDFs or broken links.
+- Ignore general city homepage.
+Jurisdiction: ${name}
+  `;
+
+  const response = await openai.responses.create({
+    model: "gpt-4.1-mini",
     input: prompt,
+    text: { format: "json" } // REQUIRED
   });
 
-  let raw = "";
   try {
-    raw = response.output[0]?.content[0]?.text?.value?.trim() ?? "";
-  } catch (e) {
-    raw = "";
+    return JSON.parse(response.output_text);
+  } catch {
+    return { url: null, notes: "AI returned non-JSON" };
   }
-
-  return raw;
 }
 
-// --------------------------
-// Main Worker Logic
-// --------------------------
-async function runWorker(req, res) {
-  // 1. Get geoid + name from URL
-  const url = new URL(req.url);
-  const geoid = url.searchParams.get("geoid");
-  const name = url.searchParams.get("name");
-
-  if (!geoid || !name) {
-    return res.status(400).json({ error: "Missing geoid or name" });
-  }
-
-  console.log(`🚀 Worker started for ${geoid} — ${name}`);
-
-  // 2. Run AI search
-  const aiRaw = await discoverPortalWithAI(name);
-  const cleaned = normalizeURL(aiRaw);
-  const vendor = detectVendor(cleaned);
-
-  // 3. Save output to Supabase
-  await sb("jurisdiction_meta", "POST", {
-    jurisdiction_geoid: geoid,
-    portal_url: cleaned,
-    vendor_type: vendor,
-    submission_method: cleaned ? "online" : "unknown",
-    license_required: true,
-    notes: aiRaw,
-  });
-
-  console.log("🎉 Worker successfully completed!", { cleaned, vendor });
-
-  return res.status(200).json({
-    geoid,
-    name,
-    discovered_url: cleaned,
-    vendor,
-    raw_ai_output: aiRaw,
-  });
-}
-
-// --------------------------
-// Vercel Handler (w/ Cron Auth)
-// --------------------------
+// ---------- MAIN HANDLER ----------
 export default async function handler(req, res) {
   try {
-    // Cron protection
-    const auth = req.headers.get("authorization");
-    if (!auth || auth !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ error: "Unauthorized" });
+    console.log("🚀 Portal discovery cron started");
+
+    // ---- DAILY COST SAFETY LIMIT ----
+    const today = new Date().toISOString().slice(0, 10);
+
+    const usage = await sb(
+      `portal_ai_usage?day=eq.${today}&limit=1`
+    );
+
+    const used = usage?.[0]?.count || 0;
+
+    if (used >= DAILY_AI_LIMIT) {
+      console.log("🛑 Daily AI limit reached. Halting.");
+      return res.status(200).json({ status: "daily_limit_reached" });
     }
 
-    return await runWorker(req, res);
+    // ---- GET NEXT JURISDICTION WITHOUT PORTAL ----
+    const pending = await sb(
+      "jurisdictions_without_portals?limit=1"
+    );
+
+    if (!pending || pending.length === 0) {
+      console.log("✨ No jurisdictions left. Idle mode.");
+      return res.status(200).json({ status: "idle" });
+    }
+
+    const jur = pending[0];
+    console.log("🔍 Processing:", jur.geoid, jur.name);
+
+    // ---- AI LOOKUP ----
+    const ai = await discoverPortalWithAI(jur.name, jur.geoid);
+    const url = validateURL(ai.url);
+    const vendor = detectVendor(url);
+
+    console.log("AI RESULT:", ai);
+
+    // ---- SAVE META ----
+    await sb("jurisdiction_meta", "POST", {
+      jurisdiction_geoid: jur.geoid,
+      portal_url: url,
+      vendor_type: vendor,
+      submission_method: url ? "online" : "unknown",
+      license_required: true,
+      notes: ai.notes || "",
+      raw_ai_output: ai
+    });
+
+    // ---- UPDATE USAGE ----
+    if (usage.length === 0) {
+      await sb("portal_ai_usage", "POST", { day: today, count: 1 });
+    } else {
+      await sb(
+        `portal_ai_usage?day=eq.${today}`,
+        "PATCH",
+        { count: used + 1 }
+      );
+    }
+
+    return res.status(200).json({
+      geoid: jur.geoid,
+      name: jur.name,
+      discovered_url: url,
+      vendor,
+      raw_ai_output: ai
+    });
+
   } catch (err) {
     console.error("🔥 Worker Error:", err);
     return res.status(500).json({
       error: "Internal error",
-      message: err.message,
+      message: err.message
     });
   }
 }
