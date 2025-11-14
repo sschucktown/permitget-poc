@@ -1,0 +1,18 @@
+name: Portal Discovery Worker
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # every 30 minutes (GitHub uses UTC)
+  workflow_dispatch: {}      # allows manual run
+
+jobs:
+  run-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call portal-discovery endpoint
+        run: |
+          curl -sS \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "https://permitget-poc.vercel.app/api/portal-discovery"
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
