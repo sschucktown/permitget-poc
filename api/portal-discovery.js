@@ -1,13 +1,14 @@
 // api/portal-discovery.js
+
 import OpenAI from "openai";
 
-// Force Node.js because Edge cannot load OpenAI SDK
+// FORCE Node.js (Edge cannot load OpenAI SDK)
 export const config = {
-  runtime: "nodejs18.x"
+  runtime: "nodejs"
 };
 
 // ------------------------------------------------------------
-// ENV
+// ENV VARS
 // ------------------------------------------------------------
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
@@ -16,7 +17,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ------------------------------------------------------------
-// SUPABASE WRAPPER (Node native fetch)
+// Supabase wrapper (Node native fetch)
 // ------------------------------------------------------------
 async function sb(path, method = "GET", body = null) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
@@ -32,14 +33,14 @@ async function sb(path, method = "GET", body = null) {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Supabase Error: ${text}`);
+    const t = await res.text().catch(() => "");
+    throw new Error(`Supabase Error: ${t}`);
   }
   return res.json();
 }
 
 // ------------------------------------------------------------
-// URL VALIDATION
+// URL Validator
 // ------------------------------------------------------------
 function validateURL(url) {
   if (!url) return null;
@@ -67,7 +68,7 @@ function validateURL(url) {
 }
 
 // ------------------------------------------------------------
-// VENDOR DETECTOR
+// Vendor Detector
 // ------------------------------------------------------------
 function detectVendor(url) {
   if (!url) return null;
@@ -89,22 +90,17 @@ function detectVendor(url) {
   for (const [vendor, key] of Object.entries(map)) {
     if (u.includes(key)) return vendor;
   }
-
   return "unknown";
 }
 
 // ------------------------------------------------------------
-// AI LOOKUP (Stable for OpenAI Responses API)
+// AI Portal Lookup
 // ------------------------------------------------------------
-async function discoverPortalWithAI(jName) {
+async function discoverPortalWithAI(name) {
   const prompt = `
-Find the official online building permit portal for "${jName}".
-
+Find the official online building permit portal for "${name}".
 Return ONLY JSON:
-{
-  "url": "...",
-  "notes": "..."
-}
+{ "url": "...", "notes": "..." }
 `;
 
   const response = await openai.responses.create({
@@ -116,13 +112,13 @@ Return ONLY JSON:
 
   try {
     return JSON.parse(text);
-  } catch (e) {
-    return { url: null, notes: "AI did not return valid JSON", raw: text };
+  } catch {
+    return { url: null, notes: "AI returned non-JSON", raw: text };
   }
 }
 
 // ------------------------------------------------------------
-// MAIN ENTRY
+// MAIN HANDLER
 // ------------------------------------------------------------
 export default async function handler(req, res) {
   try {
@@ -134,25 +130,25 @@ export default async function handler(req, res) {
       return;
     }
 
-    // 1. Load jurisdiction
-    const rows = await sb(`jurisdictions?geoid=eq.${geoid}&limit=1`);
-    if (!rows.length) {
+    // Get jurisdiction
+    const list = await sb(`jurisdictions?geoid=eq.${geoid}&limit=1`);
+    if (!list.length) {
       res.status(404).json({ error: "Jurisdiction not found" });
       return;
     }
 
-    const j = rows[0];
-    const fullName = `${j.name}, ${j.statefp}`;
+    const j = list[0];
+    const name = `${j.name}, ${j.statefp}`;
 
-    console.log("🔍 Portal discovery for:", fullName);
+    console.log("🔍 Discovering portal for", name);
 
-    // 2. Run AI
-    const ai = await discoverPortalWithAI(fullName);
+    // AI lookup
+    const ai = await discoverPortalWithAI(name);
 
     const valid = validateURL(ai.url);
     const vendor = detectVendor(valid);
 
-    // 3. Write results
+    // Store into Supabase
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: geoid,
       portal_url: valid,
@@ -162,7 +158,6 @@ export default async function handler(req, res) {
       raw_ai_output: JSON.stringify(ai)
     });
 
-    // 4. Respond
     res.status(200).json({
       geoid,
       name: j.name,
@@ -172,7 +167,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error("🔥 Worker crash:", err);
+    console.error("🔥 Worker Error:", err);
     res.status(500).json({ error: "Internal error", message: err.message });
   }
 }
