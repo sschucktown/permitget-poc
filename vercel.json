@@ -7,11 +7,5 @@
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1.js" },
     { "src": "/(.*)", "dest": "/index.html" }
-  ],
-  "crons": [
-    {
-      "path": "/api/portal-discovery",
-      "schedule": "*/20 * * * *"
-    }
   ]
 }
