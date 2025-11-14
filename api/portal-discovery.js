@@ -1,6 +1,5 @@
 // api/portal-discovery.js
 import OpenAI from "openai";
-import { request } from "undici";
 
 // =============================================
 // ENV
@@ -16,38 +15,36 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !OPENAI_API_KEY) {
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // =============================================
-// SAFE SUPABASE FETCH WRAPPER
-// (handles 204 No Content correctly)
+// SAFE SUPABASE FETCH (Vercel-native fetch)
+// Handles empty bodies + errors correctly
 // =============================================
-async function sb(path, method = "GET", body) {
+async function sb(path, method = "GET", body = null) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
 
-  const res = await request(url, {
+  const res = await fetch(url, {
     method,
     headers: {
       apikey: SUPABASE_SERVICE_ROLE,
       Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
       "Content-Type": "application/json",
-      Prefer: "return=representation" // always return JSON to avoid 204
+      Prefer: "return=representation" // ensures JSON instead of 204
     },
     body: body ? JSON.stringify(body) : undefined
   });
 
-  if (!res.statusCode || res.statusCode >= 400) {
-    const txt = await res.body.text();
-    throw new Error(`Supabase Error: ${txt}`);
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`Supabase Error: ${text}`);
   }
 
-  const text = await res.body.text();
-
-  // handle empty bodies!
   if (!text || text.trim() === "") return null;
 
   return JSON.parse(text);
 }
 
 // =============================================
-// BASIC URL VALIDATOR
+// URL VALIDATOR
 // =============================================
 function validateURL(url) {
   if (!url) return null;
@@ -55,20 +52,27 @@ function validateURL(url) {
   if (!url.includes(".")) return null;
 
   const allowed = [
-    "accela", "energov", "etrakit", "citizenserve",
-    "tylertech", "mygovernmentonline", "opengov",
-    "viewpointcloud", "cityview"
+    "accela",
+    "energov",
+    "etrakit",
+    "citizenserve",
+    "tylertech",
+    "mygovernmentonline",
+    "opengov",
+    "viewpointcloud",
+    "cityview"
   ];
 
-  const u = url.toLowerCase();
-  if (u.endsWith(".gov")) return url;
-  if (allowed.some(v => u.includes(v))) return url;
+  const lower = url.toLowerCase();
+
+  if (lower.endsWith(".gov")) return url;
+  if (allowed.some(v => lower.includes(v))) return url;
 
   return null;
 }
 
 // =============================================
-// DETECT VENDOR TYPE
+// VENDOR DETECTOR
 // =============================================
 function detectVendor(url) {
   if (!url) return null;
@@ -94,8 +98,7 @@ function detectVendor(url) {
 }
 
 // =============================================
-// AI LOOKUP
-// Uses the modern OpenAI Responses API
+// AI PORTAL DISCOVERY (Responses API)
 // =============================================
 async function discoverPortalWithAI(jurisdictionName) {
   const prompt = `
@@ -110,23 +113,23 @@ Return ONLY a JSON object:
 
 Rules:
 - Must be .gov OR a known vendor (Accela, EnerGov, eTrakit, CitizenServe, TylerTech, OpenGov, MGO)
-- Ignore PDFs or general homepages
-- Prefer "permit portal", "contractor login", "apply for permit"
+- Ignore PDFs or homepages
+- Prefer “permit portal”, “apply for permit”, “contractor login”
 `;
 
-  const response = await openai.responses.create({
+  const resp = await openai.responses.create({
     model: "gpt-4o-mini",
     input: prompt,
-    text: { format: "json" } // must be object, not string!
+    text: { format: "json" }
   });
 
-  const txt = response.output_text;
+  const txt = resp.output_text;
   let parsed = { url: null, notes: "parse_error" };
 
   try {
     parsed = JSON.parse(txt);
-  } catch (e) {
-    console.error("❌ JSON parse issue:", e, txt);
+  } catch {
+    console.error("❌ JSON parse failure:", txt);
   }
 
   return parsed;
@@ -144,7 +147,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing geoid or name" });
     }
 
-    console.log("🚀 Portal discovery started for:", geoid, name);
+    console.log("🚀 Starting portal discovery for:", geoid, name);
 
     // 1. Fetch jurisdiction
     const juris = await sb(`jurisdictions?geoid=eq.${geoid}&limit=1`);
@@ -154,13 +157,12 @@ export default async function handler(req, res) {
 
     const readableName = `${juris[0].name}, ${juris[0].statefp}`;
 
-    // 2. AI
+    // 2. AI Lookup
     const ai = await discoverPortalWithAI(readableName);
-
     const validURL = validateURL(ai.url);
     const vendor = detectVendor(validURL);
 
-    // 3. Upsert portal record
+    // 3. Upsert portal info
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: geoid,
       portal_url: validURL,
@@ -180,6 +182,9 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("🔥 Worker Error:", err);
-    return res.status(500).json({ error: "Internal error", message: err.message });
+    return res.status(500).json({
+      error: "Internal error",
+      message: err.message
+    });
   }
 }
