@@ -173,15 +173,15 @@ export default async function handler(req, res) {
   try {
     // ---------------- AUTH BLOCK (correct Node.js version) ----------------
     if (CRON_SECRET) {
-      const authHeader =
-        req.headers["authorization"] ||
-        req.headers["Authorization"] ||
-        "";
+  const authHeader =
+    req.headers["authorization"] ||
+    req.headers["Authorization"] ||
+    "";
 
-      if (authHeader !== `Bearer ${CRON_SECRET}`) {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
-    }
+  if (authHeader !== `Bearer ${CRON_SECRET}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+}
 
     console.log("🚀 Portal discovery cron fired");
 
