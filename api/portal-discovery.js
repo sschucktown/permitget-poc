@@ -27,7 +27,8 @@ async function sb(path, method = "GET", body = null) {
     headers: {
       "apikey": SUPABASE_SERVICE_ROLE,
       "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "Prefer": "return=minimal"        // <-- THIS FIXES IT
     },
     body: body ? JSON.stringify(body) : undefined
   });
@@ -36,8 +37,18 @@ async function sb(path, method = "GET", body = null) {
     const t = await res.text().catch(() => "");
     throw new Error(`Supabase Error: ${t}`);
   }
-  return res.json();
+
+  // INSERT/PATCH/DELETE returns *NO BODY* by default
+  if (res.status === 204 || res.status === 201) {
+    return {}; // prevent JSON parse crash
+  }
+
+  // If the response *has* a body, return JSON.
+  const text = await res.text();
+  if (!text) return {};
+  return JSON.parse(text);
 }
+
 
 // ------------------------------------------------------------
 // URL Validator
