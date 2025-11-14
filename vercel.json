@@ -10,8 +10,8 @@
   ],
   "crons": [
     {
-      "path": "/api/cron-portal",
-      "schedule": "*/5 * * * *"
+      "path": "/api/portal-discovery",
+      "schedule": "0 * * * *"
     }
   ]
 }
