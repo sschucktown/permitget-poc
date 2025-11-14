@@ -1,186 +1,208 @@
-// api/portal-discovery.js
-// Vercel Node runtime (NOT Edge)
 export const config = {
   runtime: "nodejs",
 };
 
 import OpenAI from "openai";
 
-// -------- CONFIG --------
+// -------------------------------
+// Environment
+// -------------------------------
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
-
-// -------- Supabase Helper --------
-async function sb(path, method = "GET", body = null) {
+// -------------------------------
+// Safe Supabase wrapper
+// -------------------------------
+async function sb(path, method = "GET", body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
-      "apikey": SUPABASE_SERVICE_ROLE,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE}`,
-      "Content-Type": "application/json"
+      apikey: SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
     },
     body: body ? JSON.stringify(body) : undefined
   });
 
-  const text = await res.text();
-
   if (!res.ok) {
+    const text = await res.text();
     throw new Error(`Supabase Error: ${text}`);
   }
 
-  // handle empty-body responses gracefully
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return {};
-  }
+  const text = await res.text();
+  if (!text) return null;
+
+  try { return JSON.parse(text); }
+  catch { return text; }
 }
 
+// -------------------------------
+// URL validation
+// -------------------------------
+function validateURL(url) {
+  if (!url) return null;
+  if (!url.startsWith("http")) return null;
 
-// -------- AI Helper: Remove Code Fences --------
-function cleanAI(text) {
-  if (!text) return text;
-  return text
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
+  const bad = ["mailto:", "javascript:"];
+  if (bad.some(p => url.startsWith(p))) return null;
+
+  return url;
 }
 
-
-// -------- Vendor Detection --------
+// -------------------------------
+// Vendor detection
+// -------------------------------
 function detectVendor(url) {
   if (!url) return null;
-
   const u = url.toLowerCase();
+
   const map = {
     accela: "accela",
     enerGov: "energov",
-    eTrakit: "etrakit",
+    etrakit: "etrakit",
     citizenserve: "citizenserve",
     tyler: "tylertech",
     opengov: "opengov",
     mgo: "mygovernmentonline",
-    cityview: "cityview",
-    viewpoint: "viewpoint"
+    viewpoint: "viewpointcloud",
+    cityview: "cityview"
   };
 
-  for (const [vendor, keyword] of Object.entries(map)) {
-    if (u.includes(keyword)) return vendor;
+  for (const [vendor, key] of Object.entries(map)) {
+    if (u.includes(key)) return vendor;
   }
 
   if (u.endsWith(".gov")) return "municipal";
   return "unknown";
 }
 
+// -------------------------------
+// AI function
+// -------------------------------
+async function discoverPortalWithAI(name) {
+  const query = `
+  Find the **official building permit portal** for **${name}**.
 
-// -------- Validate URL --------
-function validateURL(url) {
-  if (!url) return null;
-  if (!url.startsWith("http")) return null;
-  if (!url.includes(".")) return null;
-
-  return url;
-}
-
-
-// -------- AI Portal Research --------
-async function discoverPortalWithAI(name, statefp) {
-  const prompt = `
-Find the OFFICIAL online building permit portal for:
-"${name}, ${statefp}"
-
-Return ONLY valid JSON:
-{
-  "url": "https://....",
-  "notes": "..."
-}
-
-Rules:
-- Must be a .gov domain OR major vendor system (Accela, EnerGov, eTrakit, CitizenServe, Tyler, OpenGov, MGO, CityView, Viewpoint)
-- Ignore PDFs
-- Ignore city homepages unless they directly link to permitting
-- If unsure, return { "url": null, "notes": "Not found" }
-`;
+  Return JSON like:
+  { "url": "...", "notes": "..." }
+  `;
 
   const response = await openai.responses.create({
-    model: "gpt-4o-mini",
-    input: prompt
+    model: "gpt-4.1-mini",
+    input: query
   });
 
-  const raw = response.output_text;
-  const cleaned = cleanAI(raw);
+  const text = response.output_text || "";
+
+  // Extract JSON safely
+  const match = text.match(/\{[\s\S]*\}/);
+  
+  if (!match) {
+    return {
+      url: null,
+      notes: "AI did not return JSON",
+      raw: text
+    };
+  }
 
   try {
-    return JSON.parse(cleaned);
+    const parsed = JSON.parse(match[0]);
+    return { ...parsed, raw: text };
   } catch {
     return {
       url: null,
-      notes: "AI returned non-JSON",
-      raw
+      notes: "JSON parse failed",
+      raw: text
     };
   }
 }
 
-
-// -------- Insert Meta --------
-async function saveMeta(geoid, url, vendor, notes) {
-  return await sb("jurisdiction_meta", "POST", {
-    jurisdiction_geoid: geoid,
-    portal_url: url,
-    vendor_type: vendor,
-    submission_method: url ? "online" : "unknown",
-    license_required: true,
-    notes
-  });
-}
-
-
-// -------- Main Handler --------
+// -------------------------------
+// Worker: process 1 job
+// -------------------------------
 export default async function handler(req, res) {
   try {
-    const geoid = req.query.geoid;
-    if (!geoid) {
-      return res.status(400).json({ error: "Missing geoid" });
+    // 1. Get oldest pending job
+    const jobs = await sb(
+      "portal_discovery_jobs?status=eq.pending&order=created_at.asc&limit=1"
+    );
+
+    if (!jobs || jobs.length === 0) {
+      return res.status(200).json({ message: "No pending jobs." });
     }
 
-    console.log("🚀 Starting portal discovery for", geoid);
+    const job = jobs[0];
 
-    // 1. Fetch jurisdiction
-    const jur = await sb(`jurisdictions?geoid=eq.${geoid}&limit=1`);
-    if (!jur.length) {
+    // 2. Get jurisdiction
+    const j = await sb(
+      `jurisdictions?geoid=eq.${job.jurisdiction_geoid}&limit=1`
+    );
+
+    if (!j || j.length === 0) {
       return res.status(404).json({ error: "Jurisdiction not found" });
     }
 
-    const j = jur[0];
-    const readableName = `${j.name}`;
-    const statefp = j.statefp || "";
+    const jur = j[0];
+    const readableName = `${jur.name}, ${jur.state_code || ""}`.trim();
 
-    // 2. Run AI
-    const ai = await discoverPortalWithAI(readableName, statefp);
+    // Mark job running
+    await sb(
+      `portal_discovery_jobs?id=eq.${job.id}`,
+      "PATCH",
+      {
+        status: "running",
+        attempts: job.attempts + 1,
+        updated_at: new Date().toISOString()
+      }
+    );
 
-    // 3. Validate
-    const validURL = validateURL(ai.url);
-    const vendor = detectVendor(validURL);
+    // 3. AI search
+    const ai = await discoverPortalWithAI(readableName);
 
-    // 4. Save to DB
-    await saveMeta(geoid, validURL, vendor, ai.notes || "No notes");
+    const cleanURL = validateURL(ai.url);
+    const vendor = detectVendor(cleanURL);
 
-    // 5. Return result
+    // 4. Update job status
+    await sb(
+      `portal_discovery_jobs?id=eq.${job.id}`,
+      "PATCH",
+      {
+        status: cleanURL ? "success" : "failed",
+        discovered_url: cleanURL,
+        detected_vendor: vendor,
+        raw_ai_output: ai,
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    // 5. Insert into jurisdiction_meta
+    if (cleanURL) {
+      await sb(
+        "jurisdiction_meta",
+        "POST",
+        {
+          jurisdiction_geoid: job.jurisdiction_geoid,
+          portal_url: cleanURL,
+          vendor_type: vendor,
+          submission_method: "online",
+          license_required: true,
+          raw_ai_output: ai
+        }
+      );
+    }
+
     return res.status(200).json({
-      geoid,
-      name: readableName,
-      discovered_url: validURL,
+      geoid: job.jurisdiction_geoid,
+      name: jur.name,
+      discovered_url: cleanURL,
       vendor,
       raw_ai_output: ai
     });
 
   } catch (err) {
     console.error("🔥 Worker Error:", err);
-    return res.status(500).json({
-      error: "Internal error",
-      message: err.message
-    });
+    return res.status(500).json({ error: "Internal error", message: err.message });
   }
 }
