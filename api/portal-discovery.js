@@ -1,6 +1,6 @@
 // api/portal-discovery.js
 export const config = {
-  runtime: "nodejs18.x"
+  runtime: "nodejs"   // ✅ Correct Vercel serverless runtime
 };
 
 import OpenAI from "openai";
@@ -36,7 +36,7 @@ async function sb(path, method = "GET", body) {
   }
 
   try {
-    return await res.json(); // may throw if no JSON body
+    return await res.json();
   } catch {
     return null;
   }
@@ -50,15 +50,8 @@ function validateURL(url) {
 
   const lower = trimmed.toLowerCase();
   const vendorKeywords = [
-    "accela",
-    "energov",
-    "etrakit",
-    "citizenserve",
-    "tylertech",
-    "mygovernmentonline",
-    "opengov",
-    "viewpoint",
-    "cityview"
+    "accela","energov","etrakit","citizenserve","tylertech",
+    "mygovernmentonline","opengov","viewpoint","cityview"
   ];
 
   if (lower.endsWith(".gov")) return trimmed;
@@ -92,7 +85,7 @@ function detectVendor(url) {
   return "unknown";
 }
 
-// ---------- Extract JSON safely from AI ----------
+// ---------- Extract JSON safely ----------
 function extractJsonFromText(text) {
   if (!text) return null;
 
@@ -113,18 +106,16 @@ function extractJsonFromText(text) {
 // ---------- AI Portal Discovery ----------
 async function discoverPortalWithAI(readableName) {
   const prompt = `
-You are a building permit portal locator.
-
-Return ONLY a JSON object, like:
+Return ONLY JSON:
 {
   "url": "https://example.gov/permits",
   "notes": "Official building permit portal."
 }
 
-Rules:
-- Must be the official online permit portal for: "${readableName}".
-- Prefer pages that say: "permit portal", "contractor login", "apply for permits".
-- Ignore PDFs and generic homepages unless they clearly contain the permit portal.
+Official portal only.
+Jurisdiction: "${readableName}".
+Prefer pages with: contractor login, apply, permit portal.
+Ignore PDFs.
 `;
 
   const response = await openai.responses.create({
@@ -135,18 +126,14 @@ Rules:
   let textOutput = "";
 
   try {
-    if (response.output && response.output.length > 0) {
-      const first = response.output[0];
-      if (first.content && first.content.length > 0) {
-        const t = first.content[0].text;
-        textOutput = typeof t === "string" ? t : t?.value || "";
-      }
+    if (response.output?.[0]?.content?.[0]?.text) {
+      const t = response.output[0].content[0].text;
+      textOutput = typeof t === "string" ? t : t?.value || "";
     }
   } catch {
     textOutput = "";
   }
 
-  // fallback
   if (!textOutput && response.output_text) textOutput = response.output_text;
 
   const parsed = extractJsonFromText(textOutput);
@@ -154,7 +141,7 @@ Rules:
   if (parsed && typeof parsed === "object") {
     return {
       url: parsed.url || null,
-      notes: parsed.notes || "Parsed from structured JSON",
+      notes: parsed.notes || "Parsed from JSON",
       raw: textOutput
     };
   }
@@ -171,28 +158,27 @@ Rules:
 // ---------------------------------------------------------------------------
 export default async function handler(req, res) {
   try {
-    // ---------------- AUTH BLOCK (correct Node.js version) ----------------
+    // ---------------- AUTH BLOCK ----------------
     if (CRON_SECRET) {
-  const authHeader =
-    req.headers["authorization"] ||
-    req.headers["Authorization"] ||
-    "";
+      const authHeader =
+        req.headers["authorization"] ||
+        req.headers["Authorization"] ||
+        "";
 
-  if (authHeader !== `Bearer ${CRON_SECRET}`) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-}
+      if (authHeader !== `Bearer ${CRON_SECRET}`) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+    }
 
     console.log("🚀 Portal discovery cron fired");
 
     const today = new Date().toISOString().slice(0, 10);
 
-    // ---------- Check daily usage ----------
+    // ---------- usage ----------
     const usageRows = await sb(`portal_ai_usage?day=eq.${today}&limit=1`);
     const used = usageRows?.[0]?.count || 0;
 
     if (used >= DAILY_AI_LIMIT) {
-      console.log(`🛑 Daily AI limit reached (${used}/${DAILY_AI_LIMIT}).`);
       return res.status(200).json({
         status: "daily_limit_reached",
         used,
@@ -200,44 +186,36 @@ export default async function handler(req, res) {
       });
     }
 
-    // ---------- Pull next jurisdiction needing portal discovery ----------
+    // ---------- Next job ----------
     const pending = await sb("jurisdictions_without_portals?limit=1");
 
-    if (!pending || pending.length === 0) {
-      console.log("✨ All jurisdictions processed.");
-      return res.status(200).json({ status: "idle", message: "No remaining jurisdictions." });
+    if (!pending?.length) {
+      return res.status(200).json({ status: "idle" });
     }
 
     const jur = pending[0];
     const readableName = `${jur.name}, ${jur.statefp}`;
 
-    console.log("🔍 Discovering portal:", jur.geoid, readableName);
-
-    // ---------- AI Lookup ----------
+    // ---------- AI ----------
     const ai = await discoverPortalWithAI(readableName);
     const validUrl = validateURL(ai.url);
     const vendor = detectVendor(validUrl);
 
-    console.log("AI candidate:", ai);
-
-    // ---------- Save to jurisdiction_meta ----------
+    // ---------- Save ----------
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: jur.geoid,
       portal_url: validUrl,
       vendor_type: vendor,
       submission_method: validUrl ? "online" : "unknown",
       license_required: true,
-      notes: ai.notes || "",
-      raw_ai_output: ai,        // JSONB SAFE
+      notes: ai.notes,
+      raw_ai_output: ai,
       updated_at: new Date().toISOString()
     });
 
-    // ---------- Update usage counter ----------
-    if (!usageRows || usageRows.length === 0) {
-      await sb("portal_ai_usage", "POST", {
-        day: today,
-        count: 1
-      });
+    // ---------- Update usage ----------
+    if (!usageRows?.length) {
+      await sb("portal_ai_usage", "POST", { day: today, count: 1 });
     } else {
       await sb(`portal_ai_usage?day=eq.${today}`, "PATCH", {
         count: used + 1
@@ -254,9 +232,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("🔥 Worker Error:", err);
-    return res.status(500).json({
-      error: "Internal error",
-      message: err.message
-    });
+    return res.status(500).json({ error: "Internal error", message: err.message });
   }
 }
