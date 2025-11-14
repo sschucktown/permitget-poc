@@ -1,6 +1,6 @@
 // api/portal-discovery.js
 export const config = {
-  runtime: "nodejs"   // ✅ Correct Vercel serverless runtime
+  runtime: "nodejs18.x"
 };
 
 import OpenAI from "openai";
@@ -11,10 +11,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 const DAILY_AI_LIMIT = parseInt(process.env.DAILY_AI_LIMIT || "25", 10);
 const CRON_SECRET = process.env.CRON_SECRET || null;
-
-if (!OPENAI_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-  console.warn("⚠️ Missing required environment variables for portal discovery.");
-}
 
 const openai = new OpenAI({ apiKey: OPENAI_KEY });
 
@@ -42,7 +38,23 @@ async function sb(path, method = "GET", body) {
   }
 }
 
-// ---------- URL Validation ----------
+// ---------- JSON extractor ----------
+function extractJsonFromText(text) {
+  if (!text) return null;
+
+  let match = text.match(/```json([\s\S]*?)```/i);
+  if (!match) match = text.match(/```([\s\S]*?)```/);
+
+  const candidate = match ? match[1] : text;
+
+  try {
+    return JSON.parse(candidate.trim());
+  } catch {
+    return null;
+  }
+}
+
+// ---------- URL validation ----------
 function validateURL(url) {
   if (!url) return null;
   const trimmed = url.trim();
@@ -50,8 +62,8 @@ function validateURL(url) {
 
   const lower = trimmed.toLowerCase();
   const vendorKeywords = [
-    "accela","energov","etrakit","citizenserve","tylertech",
-    "mygovernmentonline","opengov","viewpoint","cityview"
+    "accela", "energov", "etrakit", "citizenserve", "tylertech",
+    "mygovernmentonline", "opengov", "viewpoint", "cityview"
   ];
 
   if (lower.endsWith(".gov")) return trimmed;
@@ -60,18 +72,18 @@ function validateURL(url) {
   return null;
 }
 
-// ---------- Vendor Detection ----------
+// ---------- Vendor detection ----------
 function detectVendor(url) {
   if (!url) return "unknown";
   const lower = url.toLowerCase();
 
   const map = {
     accela: "accela",
-    enerGov: "energov",
-    eTrakit: "etrakit",
+    energov: "energov",
+    etrakit: "etrakit",
     citizenserve: "citizenserve",
     tyler: "tylertech",
-    myGOV: "mygovernmentonline",
+    mygov: "mygovernmentonline",
     opengov: "opengov",
     viewpoint: "viewpoint",
     cityview: "cityview"
@@ -85,38 +97,20 @@ function detectVendor(url) {
   return "unknown";
 }
 
-// ---------- Extract JSON safely ----------
-function extractJsonFromText(text) {
-  if (!text) return null;
-
-  let match = text.match(/```json([\s\S]*?)```/i);
-  if (!match) {
-    match = text.match(/```([\s\S]*?)```/);
-  }
-
-  const candidate = match ? match[1] : text;
-
-  try {
-    return JSON.parse(candidate.trim());
-  } catch {
-    return null;
-  }
-}
-
-// ---------- AI Portal Discovery ----------
+// ---------- AI lookup ----------
 async function discoverPortalWithAI(readableName) {
   const prompt = `
-Return ONLY JSON:
+Return ONLY this shape:
+
 {
   "url": "https://example.gov/permits",
   "notes": "Official building permit portal."
 }
 
-Official portal only.
-Jurisdiction: "${readableName}".
-Prefer pages with: contractor login, apply, permit portal.
-Ignore PDFs.
-`;
+Find the official building permit portal for: "${readableName}".
+Ignore PDFs, generic homepages, and broken links.
+Pick the most direct and official permit portal page.
+  `;
 
   const response = await openai.responses.create({
     model: "gpt-4.1-mini",
@@ -126,10 +120,9 @@ Ignore PDFs.
   let textOutput = "";
 
   try {
-    if (response.output?.[0]?.content?.[0]?.text) {
-      const t = response.output[0].content[0].text;
-      textOutput = typeof t === "string" ? t : t?.value || "";
-    }
+    const first = response.output?.[0];
+    const content = first?.content?.[0]?.text;
+    textOutput = typeof content === "string" ? content : content?.value || "";
   } catch {
     textOutput = "";
   }
@@ -138,17 +131,17 @@ Ignore PDFs.
 
   const parsed = extractJsonFromText(textOutput);
 
-  if (parsed && typeof parsed === "object") {
+  if (parsed) {
     return {
       url: parsed.url || null,
-      notes: parsed.notes || "Parsed from JSON",
+      notes: parsed.notes || "Parsed JSON",
       raw: textOutput
     };
   }
 
   return {
     url: null,
-    notes: "AI returned non-JSON",
+    notes: "Non-JSON AI output",
     raw: textOutput
   };
 }
@@ -158,7 +151,7 @@ Ignore PDFs.
 // ---------------------------------------------------------------------------
 export default async function handler(req, res) {
   try {
-    // ---------------- AUTH BLOCK ----------------
+    // ---------- FIXED AUTH BLOCK ----------
     if (CRON_SECRET) {
       const authHeader =
         req.headers["authorization"] ||
@@ -172,11 +165,10 @@ export default async function handler(req, res) {
 
     console.log("🚀 Portal discovery cron fired");
 
+    // ---------- Daily usage ----------
     const today = new Date().toISOString().slice(0, 10);
-
-    // ---------- usage ----------
     const usageRows = await sb(`portal_ai_usage?day=eq.${today}&limit=1`);
-    const used = usageRows?.[0]?.count || 0;
+    const used = usageRows?.[0]?.count ?? 0;
 
     if (used >= DAILY_AI_LIMIT) {
       return res.status(200).json({
@@ -186,22 +178,26 @@ export default async function handler(req, res) {
       });
     }
 
-    // ---------- Next job ----------
+    // ---------- Fetch one pending jurisdiction ----------
     const pending = await sb("jurisdictions_without_portals?limit=1");
 
-    if (!pending?.length) {
-      return res.status(200).json({ status: "idle" });
+    if (!pending || pending.length === 0) {
+      return res.status(200).json({
+        status: "idle",
+        message: "No jurisdictions remaining."
+      });
     }
 
     const jur = pending[0];
     const readableName = `${jur.name}, ${jur.statefp}`;
+    console.log("🔍 Discovering:", jur.geoid, readableName);
 
-    // ---------- AI ----------
+    // ---------- AI discovery ----------
     const ai = await discoverPortalWithAI(readableName);
     const validUrl = validateURL(ai.url);
     const vendor = detectVendor(validUrl);
 
-    // ---------- Save ----------
+    // ---------- Insert metadata ----------
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: jur.geoid,
       portal_url: validUrl,
@@ -209,13 +205,16 @@ export default async function handler(req, res) {
       submission_method: validUrl ? "online" : "unknown",
       license_required: true,
       notes: ai.notes,
-      raw_ai_output: ai,
+      raw_ai_output: ai, // JSONB safe
       updated_at: new Date().toISOString()
     });
 
     // ---------- Update usage ----------
     if (!usageRows?.length) {
-      await sb("portal_ai_usage", "POST", { day: today, count: 1 });
+      await sb("portal_ai_usage", "POST", {
+        day: today,
+        count: 1
+      });
     } else {
       await sb(`portal_ai_usage?day=eq.${today}`, "PATCH", {
         count: used + 1
@@ -232,6 +231,9 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("🔥 Worker Error:", err);
-    return res.status(500).json({ error: "Internal error", message: err.message });
+    return res.status(500).json({
+      error: "Internal error",
+      message: err.message
+    });
   }
 }
