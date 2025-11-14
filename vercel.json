@@ -1,7 +1,10 @@
 {
   "version": 2,
+  "functions": {
+    "api/portal-discovery.js": { "runtime": "nodejs" },
+    "api/portal-verifier.js": { "runtime": "nodejs" }
+  },
   "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1" },
-    { "src": "/(.*)", "dest": "/index.html" }
+    { "src": "/api/(.*)", "dest": "/api/$1.js" }
   ]
 }
