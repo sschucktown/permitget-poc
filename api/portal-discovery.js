@@ -3,10 +3,10 @@ import OpenAI from "openai";
 import { URL } from "url";
 
 // -----------------------------
-// ENV VARS (REQUIRED)
+// ENV VARS
 // -----------------------------
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE; // MUST be service_role
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const client = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -18,27 +18,23 @@ async function sb(path, method = "GET", body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
-      "apikey": SUPABASE_SERVICE_ROLE,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE}`,
+      apikey: SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
       "Content-Type": "application/json"
     },
     body: body ? JSON.stringify(body) : undefined
   });
 
   if (!res.ok) {
-    let msg;
-    try {
-      msg = await res.text();
-    } catch {
-      msg = "unknown sb error";
-    }
-    throw new Error(`Supabase Error: ${msg}`);
+    const errMsg = await res.text().catch(() => "Unknown Supabase error");
+    throw new Error(`Supabase Error: ${errMsg}`);
   }
+
   return res.json();
 }
 
 // -----------------------------
-// Validate portal URL
+// Validate URL
 // -----------------------------
 function validateURL(u) {
   if (!u) return null;
@@ -47,13 +43,19 @@ function validateURL(u) {
     const host = url.hostname.toLowerCase();
 
     const vendors = [
-      "accela", "energov", "etrakit",
-      "citizenserve", "tylertech",
-      "mygovernmentonline", "opengov", "viewpoint", "cityview"
+      "accela",
+      "energov",
+      "etrakit",
+      "citizenserve",
+      "tylertech",
+      "mygovernmentonline",
+      "opengov",
+      "viewpoint",
+      "cityview"
     ];
 
     if (host.endsWith(".gov")) return u;
-    if (vendors.some(v => host.includes(v))) return u;
+    if (vendors.some((v) => host.includes(v))) return u;
 
     return null;
   } catch {
@@ -62,27 +64,27 @@ function validateURL(u) {
 }
 
 // -----------------------------
-// Detect vendor from URL
+// Detect vendor keyword
 // -----------------------------
-function detectVendor(u) {
-  if (!u) return null;
-  const host = u.toLowerCase();
+function detectVendor(url) {
+  if (!url) return null;
+  const u = url.toLowerCase();
 
-  if (host.includes("accela")) return "accela";
-  if (host.includes("energov")) return "energov";
-  if (host.includes("etrakit")) return "etrakit";
-  if (host.includes("citizenserve")) return "citizenserve";
-  if (host.includes("tyler")) return "tyler";
-  if (host.includes("mygovernmentonline")) return "mgo";
-  if (host.includes("opengov")) return "opengov";
-  if (host.includes("viewpoint")) return "viewpoint";
-  if (host.includes("cityview")) return "cityview";
-  if (host.endsWith(".gov")) return "municipal";
+  if (u.includes("accela")) return "accela";
+  if (u.includes("energov")) return "energov";
+  if (u.includes("etrakit")) return "etrakit";
+  if (u.includes("citizenserve")) return "citizenserve";
+  if (u.includes("tyler")) return "tyler";
+  if (u.includes("mygovernmentonline")) return "mgo";
+  if (u.includes("viewpoint")) return "viewpoint";
+  if (u.includes("cityview")) return "cityview";
+  if (u.includes("opengov")) return "opengov";
+  if (u.endsWith(".gov")) return "municipal";
   return "unknown";
 }
 
 // -----------------------------
-// OpenAI lookup (Responses API)
+// OpenAI — Responses API
 // -----------------------------
 async function discoverPortalWithAI(jurisdictionName) {
   const prompt = `
@@ -90,28 +92,26 @@ Find the OFFICIAL online building permit portal for:
 "${jurisdictionName}"
 
 RULES:
-- Return ONLY valid JSON.
-- Must be a .gov site OR a known vendor (Accela, EnerGov, eTrakit, CitizenServe, Tyler, OpenGov, MGO).
+- Return ONLY JSON.
+- Must be .gov OR a known vendor (Accela, EnerGov, eTrakit, CitizenServe, Tyler, OpenGov, MGO).
 - Ignore PDFs.
-- Ignore city/county homepages unless they link directly to permits.
-- Prefer "permit portal", "contractor login", or "building permits" pages.
+- Ignore homepages unless they link directly to permits.
+- Prioritize "building permits", "permit portal", "contractor login".
 
-JSON shape:
+JSON Response:
 {
   "url": "https://...",
-  "notes": "why this URL"
+  "notes": "why this is correct"
 }
-  `;
+`;
 
-  // ⬇️ Responses API — MUST use `input`
-  const response = await client.responses.create({
+  const resp = await client.responses.create({
     model: "gpt-4o-mini",
-    reasoning: { effort: "low" },
     input: prompt
   });
 
-  // ⬇️ Correct extraction
-  const rawText = response.output?.[0]?.content?.[0]?.text || "";
+  const rawText =
+    resp.output?.[0]?.content?.[0]?.text?.trim() ?? "";
 
   let parsed;
   try {
@@ -132,7 +132,7 @@ JSON shape:
 }
 
 // -----------------------------
-// Handler (supports GET single lookup)
+// Vercel endpoint handler
 // -----------------------------
 export default async function handler(req, res) {
   try {
@@ -142,35 +142,31 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing geoid or name" });
     }
 
-    // 1. Call AI discovery
-    const result = await discoverPortalWithAI(name);
+    // 1. Get AI result
+    const ai = await discoverPortalWithAI(name);
 
-    // 2. Validate URL
-    const valid = validateURL(result.url);
-    const vendor = detectVendor(valid);
+    // 2. Validate the URL
+    const portal = validateURL(ai.url);
+    const vendor = detectVendor(portal);
 
-    // 3. Upsert into jurisdiction_meta
-    const payload = {
+    // 3. Write to Supabase
+    await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: geoid,
-      portal_url: valid,
+      portal_url: portal,
       vendor_type: vendor,
-      submission_method: valid ? "online" : null,
-      license_required: valid ? true : null,
-      notes: result.notes || "",
-      raw_ai_output: result.raw_ai_output || ""
-    };
+      submission_method: portal ? "online" : null,
+      license_required: portal ? true : null,
+      notes: ai.notes,
+      raw_ai_output: ai.raw_ai_output
+    });
 
-    await sb("jurisdiction_meta", "POST", payload);
-
-    // 4. Return result
     return res.status(200).json({
       geoid,
       name,
-      discovered_url: valid,
+      discovered_url: portal,
       vendor,
-      raw_ai_output: result.raw_ai_output
+      raw_ai_output: ai.raw_ai_output
     });
-
   } catch (err) {
     console.error("🔥 Worker Error:", err);
     return res.status(500).json({
