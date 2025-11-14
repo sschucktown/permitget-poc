@@ -1,6 +1,6 @@
 // api/portal-discovery.js
 export const config = {
-  runtime: "nodejs18.x"
+  runtime: nodejs"
 };
 
 import OpenAI from "openai";
