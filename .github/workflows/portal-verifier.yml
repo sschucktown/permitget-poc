@@ -1,0 +1,20 @@
+name: Portal Verifier Worker
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch:
+
+jobs:
+  verify-portals:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run Portal Verifier Worker
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          echo "Running Verifier..."
+          curl -sS \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "https://permitget-poc.vercel.app/api/portal-verifier"
