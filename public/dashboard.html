@@ -1,186 +1,83 @@
 <!DOCTYPE html>
-<html lang="en" class="bg-gray-50">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PermitGet Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-  <!-- Supabase -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 
-<body class="text-gray-900">
-  <div class="max-w-6xl mx-auto py-10">
+<body class="bg-gray-100">
 
-    <h1 class="text-3xl font-bold mb-6">📊 PermitGet Ops Dashboard</h1>
+  <!-- HEADER -->
+  <div class="bg-blue-700 text-white p-4 shadow">
+    <h1 class="text-2xl font-bold">PermitGet Dashboard</h1>
+    <p class="text-sm opacity-90">Real-time portal discovery analytics</p>
+  </div>
 
-    <!-- Summary Section -->
-    <div id="summary" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8"></div>
+  <div class="p-6 space-y-6">
 
-    <!-- Vendor Distribution -->
-    <div class="bg-white rounded-lg shadow p-6 mb-8">
-      <h2 class="text-xl font-semibold mb-3">🏛️ Vendor Distribution</h2>
-      <canvas id="vendorChart" height="120"></canvas>
+    <!-- TOP CARDS -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+      <!-- Pending Count -->
+      <div class="bg-white p-6 rounded shadow">
+        <h2 class="text-lg font-semibold">Pending Jurisdictions</h2>
+        <p id="pendingCount" class="text-4xl font-bold mt-2">–</p>
+      </div>
+
+      <!-- AI Usage Today -->
+      <div class="bg-white p-6 rounded shadow">
+        <h2 class="text-lg font-semibold">AI Calls Today</h2>
+        <p id="usageToday" class="text-4xl font-bold mt-2">–</p>
+        <p class="text-sm text-gray-500" id="usageLimit"></p>
+      </div>
+
+      <!-- Last Portal -->
+      <div class="bg-white p-6 rounded shadow">
+        <h2 class="text-lg font-semibold">Last Portal Discovered</h2>
+        <p id="lastPortal" class="text-md mt-2">–</p>
+      </div>
+
     </div>
 
-    <!-- AI Usage -->
-    <div class="bg-white rounded-lg shadow p-6 mb-8">
-      <h2 class="text-xl font-semibold mb-3">🤖 AI Usage (Last 7 Days)</h2>
-      <canvas id="aiChart" height="120"></canvas>
+    <!-- CHARTS -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      <!-- AI Usage Chart -->
+      <div class="bg-white p-4 rounded shadow">
+        <h3 class="font-semibold mb-2">AI Usage (Past 14 Days)</h3>
+        <canvas id="aiUsageChart" height="200"></canvas>
+      </div>
+
+      <!-- Vendor Breakdown -->
+      <div class="bg-white p-4 rounded shadow">
+        <h3 class="font-semibold mb-2">Portal Vendor Breakdown</h3>
+        <canvas id="vendorChart" height="200"></canvas>
+      </div>
+
     </div>
 
-    <!-- Last processed -->
-    <div class="bg-white rounded-lg shadow p-6">
-      <h2 class="text-xl font-semibold mb-3">🔍 Latest Discovery Event</h2>
-      <pre
-        id="latest"
-        class="bg-gray-100 p-4 rounded text-sm overflow-x-auto"
-      >
-Loading…
-      </pre>
+    <!-- TABLE: RECENT DISCOVERIES -->
+    <div class="bg-white p-6 rounded shadow">
+      <h2 class="text-xl font-bold mb-3">Recent Portal Discoveries</h2>
+
+      <table class="min-w-full text-left border">
+        <thead>
+          <tr class="border-b bg-gray-50">
+            <th class="p-2 font-semibold">Jurisdiction</th>
+            <th class="p-2 font-semibold">URL</th>
+            <th class="p-2 font-semibold">Vendor</th>
+            <th class="p-2 font-semibold">Date</th>
+          </tr>
+        </thead>
+        <tbody id="recentTable"></tbody>
+      </table>
     </div>
 
   </div>
 
-  <script type="module">
-    // ----------------------------
-    // Setup
-    // ----------------------------
-    const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-    const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-    // ----------------------------
-    // Fetch summary
-    // ----------------------------
-    async function loadSummary() {
-      const { data, error } = await supabase
-        .from("permitget_summary")
-        .select("*")
-        .single();
-
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      const cards = [
-        { name: "Total Jurisdictions", value: data.total },
-        { name: "Pending Discovery", value: data.pending },
-        { name: "Needs Verification", value: data.needs_verification },
-        {
-          name: "Verified",
-          value: `${data.verified} (${data.verified_percent.toFixed(1)}%)`,
-        },
-      ];
-
-      document.getElementById("summary").innerHTML = cards
-        .map(
-          (c) => `
-        <div class="bg-white shadow p-6 rounded-lg">
-          <div class="text-2xl font-bold">${c.value}</div>
-          <div class="text-gray-600">${c.name}</div>
-        </div>
-      `
-        )
-        .join("");
-    }
-
-    // ----------------------------
-    // Vendor Distribution Chart
-    // ----------------------------
-    async function loadVendors() {
-      const { data, error } = await supabase
-        .from("permitget_vendor_distribution")
-        .select("*");
-
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      new Chart(document.getElementById("vendorChart"), {
-        type: "bar",
-        data: {
-          labels: data.map((v) => v.vendor_type || "unknown"),
-          datasets: [
-            {
-              label: "Count",
-              data: data.map((v) => v.count),
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: false } },
-        },
-      });
-    }
-
-    // ----------------------------
-    // AI Usage Chart
-    // ----------------------------
-    async function loadAI() {
-      const { data, error } = await supabase
-        .from("permitget_ai_daily_usage")
-        .select("*")
-        .order("day", { ascending: true })
-        .limit(7);
-
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      new Chart(document.getElementById("aiChart"), {
-        type: "line",
-        data: {
-          labels: data.map((d) => d.day),
-          datasets: [
-            {
-              label: "Requests",
-              data: data.map((d) => d.requests_used),
-              borderColor: "#2563eb",
-              tension: 0.25,
-            },
-          ],
-        },
-      });
-    }
-
-    // ----------------------------
-    // Latest portal discovery
-    // ----------------------------
-    async function loadLatest() {
-      const { data, error } = await supabase
-        .from("jurisdiction_meta")
-        .select("jurisdiction_geoid, portal_url, vendor_type, updated_at, raw_ai_output")
-        .order("updated_at", { ascending: false })
-        .limit(1);
-
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      document.getElementById("latest").innerText = JSON.stringify(
-        data[0],
-        null,
-        2
-      );
-    }
-
-    // ----------------------------
-    // Initialize
-    // ----------------------------
-    loadSummary();
-    loadVendors();
-    loadAI();
-    loadLatest();
-  </script>
+  <script src="/dashboard.js"></script>
 </body>
 </html>
