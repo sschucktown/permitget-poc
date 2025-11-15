@@ -3,10 +3,11 @@
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1.js" },
 
-    { "src": "/dashboard.html", "dest": "/dashboard.html" },
+    { "src": "/dashboard", "dest": "/public/dashboard.html" },
+    { "src": "/dashboard.html", "dest": "/public/dashboard.html" },
 
     { "handle": "filesystem" },
 
-    { "src": "/(.*)", "dest": "/index.html" }
+    { "src": "/(.*)", "dest": "/public/index.html" }
   ]
 }
