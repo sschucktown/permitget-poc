@@ -1,13 +1,16 @@
 {
   "version": 2,
+  "builds": [
+    { "src": "api/**/*.js", "use": "@vercel/node" }
+  ],
   "routes": [
     { "handle": "filesystem" },
 
-    { "src": "/dashboard", "dest": "/dashboard.html" },
-    { "src": "/dashboard.html", "dest": "/dashboard.html" },
+    { "src": "^/dashboard$", "dest": "/public/dashboard.html" },
+    { "src": "^/dashboard.html$", "dest": "/public/dashboard.html" },
 
     { "src": "/api/(.*)", "dest": "/api/$1.js" },
 
-    { "src": "/(.*)", "dest": "/index.html" }
+    { "src": "/(.*)", "dest": "/public/index.html" }
   ]
 }
