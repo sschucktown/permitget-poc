@@ -11,9 +11,19 @@
 <body class="bg-gray-100">
 
   <!-- HEADER -->
-  <div class="bg-blue-700 text-white p-4 shadow">
-    <h1 class="text-2xl font-bold">PermitGet Dashboard</h1>
-    <p class="text-sm opacity-90">Real-time portal discovery analytics</p>
+  <div class="bg-blue-700 text-white p-4 shadow flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">PermitGet Dashboard</h1>
+      <p class="text-sm opacity-90">Real-time portal discovery analytics</p>
+    </div>
+
+    <!-- RUN DISCOVERY BUTTON -->
+    <button
+      id="runDiscoveryBtn"
+      class="bg-yellow-400 hover:bg-yellow-500 text-black font-semibold px-4 py-2 rounded shadow"
+    >
+      Run Portal Discovery Now
+    </button>
   </div>
 
   <div class="p-6 space-y-6">
@@ -78,6 +88,33 @@
 
   </div>
 
+  <!-- SCRIPT -->
   <script src="/dashboard.js"></script>
+
+  <!-- RUN DISCOVERY BUTTON SCRIPT -->
+  <script>
+    document.getElementById("runDiscoveryBtn").addEventListener("click", async () => {
+      const secret = prompt("Enter your CRON SECRET:");
+
+      if (!secret) {
+        alert("CRON_SECRET required.");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/portal-discovery", {
+          headers: { Authorization: `Bearer ${secret}` }
+        });
+
+        const data = await res.json();
+        alert(JSON.stringify(data, null, 2));
+
+      } catch (err) {
+        alert("Error running portal discovery. Check console.");
+        console.error(err);
+      }
+    });
+  </script>
+
 </body>
 </html>
