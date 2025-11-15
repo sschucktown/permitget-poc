@@ -1,4 +1,7 @@
 // api/portal-discovery.js
+export const config = {
+  runtime: "nodejs"
+};
 
 import OpenAI from "openai";
 
@@ -11,21 +14,30 @@ const CRON_SECRET = process.env.CRON_SECRET || null;
 
 const openai = new OpenAI({ apiKey: OPENAI_KEY });
 
-// ---------- Supabase helper ----------
+// ---------- Time (Eastern Date) ----------
+function getEasternDateString() {
+  const est = new Date().toLocaleString("en-US", {
+    timeZone: "America/New_York",
+  });
+  const [month, day, year] = est.split(",")[0].split("/");
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+const today = getEasternDateString();
+
+// ---------- Supabase ----------
 async function sb(path, method = "GET", body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
       apikey: SUPABASE_SERVICE_ROLE,
       Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
-    body: body ? JSON.stringify(body) : undefined
+    body: body ? JSON.stringify(body) : undefined,
   });
 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Supabase Error: ${errText}`);
+    throw new Error(`Supabase Error: ${await res.text()}`);
   }
 
   try {
@@ -35,7 +47,7 @@ async function sb(path, method = "GET", body) {
   }
 }
 
-// ---------- JSON extractor ----------
+// ---------- JSON Extractor ----------
 function extractJsonFromText(text) {
   if (!text) return null;
 
@@ -51,28 +63,34 @@ function extractJsonFromText(text) {
   }
 }
 
-// ---------- URL validation ----------
+// ---------- URL Validation ----------
 function validateURL(url) {
   if (!url) return null;
-  const trimmed = url.trim();
-  if (!trimmed.startsWith("http")) return null;
+  const t = url.trim().toLowerCase();
+  if (!t.startsWith("http")) return null;
+  if (t.endsWith(".gov")) return url;
 
-  const lower = trimmed.toLowerCase();
-  const vendorKeywords = [
-    "accela", "energov", "etrakit", "citizenserve", "tylertech",
-    "mygovernmentonline", "opengov", "viewpoint", "cityview"
+  const vendors = [
+    "accela",
+    "energov",
+    "etrakit",
+    "citizenserve",
+    "tylertech",
+    "mygovernmentonline",
+    "opengov",
+    "viewpoint",
+    "cityview",
   ];
 
-  if (lower.endsWith(".gov")) return trimmed;
-  if (vendorKeywords.some(v => lower.includes(v))) return trimmed;
+  if (vendors.some((v) => t.includes(v))) return url;
 
   return null;
 }
 
-// ---------- Vendor detection ----------
+// ---------- Vendor Detection ----------
 function detectVendor(url) {
   if (!url) return "unknown";
-  const lower = url.toLowerCase();
+  const t = url.toLowerCase();
 
   const map = {
     accela: "accela",
@@ -83,153 +101,147 @@ function detectVendor(url) {
     mygov: "mygovernmentonline",
     opengov: "opengov",
     viewpoint: "viewpoint",
-    cityview: "cityview"
+    cityview: "cityview",
   };
 
-  for (const [vendor, keyword] of Object.entries(map)) {
-    if (lower.includes(keyword)) return vendor;
+  for (const [vendor, key] of Object.entries(map)) {
+    if (t.includes(key)) return vendor;
   }
 
-  if (lower.endsWith(".gov")) return "municipal";
-  return "unknown";
+  return t.endsWith(".gov") ? "municipal" : "unknown";
 }
 
 // ---------- AI lookup ----------
-async function discoverPortalWithAI(readableName) {
+async function discoverPortalWithAI(name) {
   const prompt = `
-Return ONLY:
+Return ONLY JSON:
 
 {
   "url": "https://example.gov/permits",
   "notes": "Official building permit portal."
 }
 
-Target jurisdiction: "${readableName}".
-Ignore PDFs, general homepages, or non-official pages.
-  `;
+Find the official online building permit portal for: "${name}".
+Ignore PDFs, generic homepages, and non-portals.
+`;
 
   const response = await openai.responses.create({
     model: "gpt-4.1-mini",
-    input: prompt
+    input: prompt,
   });
 
-  let textOutput = "";
+  let textOut = "";
 
   try {
     const first = response.output?.[0];
     const content = first?.content?.[0]?.text;
-    textOutput = typeof content === "string" ? content : content?.value || "";
+    textOut = typeof content === "string" ? content : content?.value || "";
   } catch {
-    textOutput = "";
+    textOut = "";
   }
 
-  if (!textOutput && response.output_text) textOutput = response.output_text;
+  if (!textOut && response.output_text) textOut = response.output_text;
 
-  const parsed = extractJsonFromText(textOutput);
+  const parsed = extractJsonFromText(textOut);
 
   if (parsed) {
     return {
       url: parsed.url || null,
       notes: parsed.notes || "Parsed JSON",
-      raw: textOutput
+      raw: textOut,
     };
   }
 
   return {
     url: null,
-    notes: "Non-JSON AI output",
-    raw: textOutput
+    notes: "AI returned non-JSON",
+    raw: textOut,
   };
 }
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------
 // MAIN HANDLER
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------
 export default async function handler(req, res) {
   try {
-    // ---------- Auth ----------
+    // AUTH
     if (CRON_SECRET) {
-      const authHeader =
+      const h =
         req.headers["authorization"] ||
         req.headers["Authorization"] ||
         "";
 
-      if (authHeader !== `Bearer ${CRON_SECRET}`) {
+      if (h !== `Bearer ${CRON_SECRET}`) {
         return res.status(401).json({ error: "Unauthorized" });
       }
     }
 
-    console.log("🚀 Portal discovery cron fired");
+    console.log("🚀 Portal discovery fired");
 
-    // ---------- Daily usage ----------
-    const today = new Date().toISOString().slice(0, 10);
-    const usageRows = await sb(`portal_ai_usage?day=eq.${today}&limit=1`);
-    const used = usageRows?.[0]?.count ?? 0;
+    // Check AI usage
+    const usage = await sb(`portal_ai_usage?day=eq.${today}`);
+    const used = usage?.[0]?.count || 0;
 
     if (used >= DAILY_AI_LIMIT) {
       return res.status(200).json({
         status: "daily_limit_reached",
         used,
-        DAILY_AI_LIMIT
+        DAILY_AI_LIMIT,
       });
     }
 
-    // ---------- Fetch one pending jurisdiction ----------
+    // Get next jurisdiction
     const pending = await sb("jurisdictions_without_portals?limit=1");
 
-    if (!pending || pending.length === 0) {
+    if (!pending?.length) {
       return res.status(200).json({
         status: "idle",
-        message: "No jurisdictions remaining."
+        message: "No jurisdictions remaining",
       });
     }
 
-    const jur = pending[0];
-    const readableName = `${jur.name}, ${jur.statefp}`;
-    console.log("🔍 Discovering:", jur.geoid, readableName);
+    const j = pending[0];
+    const readable = `${j.name}, ${j.statefp}`;
+    console.log("🔍 Discovering:", j.geoid, readable);
 
-    // ---------- AI discovery ----------
-    const ai = await discoverPortalWithAI(readableName);
-    const validUrl = validateURL(ai.url);
-    const vendor = detectVendor(validUrl);
+    // AI
+    const ai = await discoverPortalWithAI(readable);
+    const url = validateURL(ai.url);
+    const vendor = detectVendor(url);
 
-    // ---------- Insert metadata ----------
+    // Write metadata
     await sb("jurisdiction_meta", "POST", {
-      jurisdiction_geoid: jur.geoid,
-      portal_url: validUrl,
+      jurisdiction_geoid: j.geoid,
+      portal_url: url,
       vendor_type: vendor,
-      submission_method: validUrl ? "online" : "unknown",
+      submission_method: url ? "online" : "unknown",
       license_required: true,
       notes: ai.notes,
       raw_ai_output: ai,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     });
 
-    // ---------- Update usage ----------
-    if (!usageRows?.length) {
+    // Update usage
+    if (!usage?.length) {
       await sb("portal_ai_usage", "POST", {
         day: today,
-        count: 1
+        count: 1,
       });
     } else {
       await sb(`portal_ai_usage?day=eq.${today}`, "PATCH", {
-        count: used + 1
+        count: used + 1,
       });
     }
 
     return res.status(200).json({
-      geoid: jur.geoid,
-      name: jur.name,
-      discovered_url: validUrl,
+      geoid: j.geoid,
+      name: j.name,
+      discovered_url: url,
       vendor,
-      raw_ai_output: ai
+      raw_ai_output: ai,
     });
-
   } catch (err) {
     console.error("🔥 Worker Error:", err);
-    return res.status(500).json({
-      error: "Internal error",
-      message: err.message
-    });
+    return res.status(500).json({ error: "Internal error", message: err.message });
   }
 }
