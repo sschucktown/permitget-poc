@@ -5,9 +5,7 @@
   ],
   "routes": [
     { "handle": "filesystem" },
-
     { "src": "/dashboard", "dest": "/dashboard.html" },
-
     { "src": "/api/(.*)", "dest": "/api/$1.js" }
   ]
 }
