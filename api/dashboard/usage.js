@@ -1,30 +1,33 @@
-import { sb } from "../_utils.js";
+import { fetchSupabase } from "../_utils.js";
 
 export default async function handler(req, res) {
   try {
     const today = new Date().toISOString().slice(0, 10);
 
-    const todayRows = await sb(`
-      select day, count
-      from portal_ai_usage
-      where day = '${today}'
-    `);
+    // today's usage
+    const todayResp = await fetchSupabase(
+      `/portal_ai_usage?day=eq.${today}&limit=1`,
+      "GET"
+    );
 
-    const last14 = await sb(`
-      select day, count
-      from portal_ai_usage
-      order by day desc
-      limit 14
-    `);
+    const todayCount =
+      todayResp.data?.[0]?.count !== undefined ? todayResp.data[0].count : 0;
 
-    res.status(200).json({
-      today: { count: todayRows?.[0]?.count ?? 0 },
-      last14: last14 || [],
-      limit: 30
+    // last 14 days
+    const last14 = await fetchSupabase(
+      `/portal_ai_usage?order=day.desc&limit=14`,
+      "GET"
+    );
+
+    return res.status(200).json({
+      today: { count: todayCount },
+      limit: 30,
+      remaining: Math.max(0, 30 - todayCount),
+      last14: last14.data ?? []
     });
-
   } catch (err) {
     console.error("Usage Error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "server_error", message: err.message });
   }
 }
+
