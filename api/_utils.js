@@ -1,12 +1,10 @@
 // api/_utils.js
 
-/**
- * Execute raw SQL through Supabase RPC (exec_sql)
- * Always returns JSON array results.
- */
-
 export async function sb(sql) {
+  console.log("🔵 Running SQL:", sql);
+
   const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/exec_sql`;
+  console.log("🔵 Calling RPC URL:", url);
 
   const res = await fetch(url, {
     method: "POST",
@@ -18,10 +16,17 @@ export async function sb(sql) {
     body: JSON.stringify({ sql })
   });
 
+  console.log("🟡 RPC status:", res.status);
+
   if (!res.ok) {
-    const msg = await res.text();
-    throw new Error(`SQL Error: ${msg}`);
+    const errText = await res.text();
+    console.error("🔴 SQL RPC Error Response:", errText);
+    throw new Error(`SQL Error: ${errText}`);
   }
 
-  return res.json();
+  const json = await res.json();
+  console.log("🟢 RPC result:", json);
+
+  return json;
 }
+
