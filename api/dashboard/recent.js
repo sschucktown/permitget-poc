@@ -1,36 +1,43 @@
-import { sb } from "../_utils.js";
+import { fetchSupabase } from "../_utils.js";
 
 export default async function handler(req, res) {
   try {
-    const sql = `
-      select 
-        jm.jurisdiction_geoid,
-        j.name,
-        jm.portal_url,
-        jm.vendor_type,
-        jm.updated_at
-      from jurisdiction_meta jm
-      join jurisdictions j
-        on j.geoid = jm.jurisdiction_geoid
-      order by jm.updated_at desc
-      limit 20;
-    `;
+    // Pull last 20 jurisdiction_meta entries
+    const recent = await fetchSupabase(
+      "/jurisdiction_meta?order=created_at.desc&limit=20",
+      "GET"
+    );
 
-    const rows = await sb(sql);
+    const rows = recent.data ?? [];
 
-    const vendorBreakdown = {};
-    rows.forEach(r => {
-      const v = r.vendor_type ?? "unknown";
-      vendorBreakdown[v] = (vendorBreakdown[v] || 0) + 1;
-    });
+    // vendor breakdown
+    const vendorBreakdown = rows.reduce((acc, row) => {
+      const vendor = row.vendor_type || "unknown";
+      acc[vendor] = (acc[vendor] || 0) + 1;
+      return acc;
+    }, {});
 
-    res.status(200).json({
-      rows,
+    // Attach jurisdiction names
+    const fullRows = [];
+
+    for (const r of rows) {
+      const j = await fetchSupabase(
+        `/jurisdictions?geoid=eq.${r.jurisdiction_geoid}&limit=1`,
+        "GET"
+      );
+
+      fullRows.push({
+        ...r,
+        name: j.data?.[0]?.name ?? r.jurisdiction_geoid
+      });
+    }
+
+    return res.status(200).json({
+      rows: fullRows,
       vendorBreakdown
     });
-
   } catch (err) {
     console.error("Recent Error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "server_error", message: err.message });
   }
 }
