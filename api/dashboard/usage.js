@@ -2,27 +2,24 @@ import { sb } from "../_utils.js";
 
 export default async function handler(req, res) {
   try {
-    const today = new Date().toISOString().slice(0,10);
+    const today = new Date().toISOString().slice(0, 10);
 
-    const todaySql = `
-      select count
+    const todayRows = await sb(`
+      select day, count
       from portal_ai_usage
-      where day = '${today}';
-    `;
+      where day = '${today}'
+    `);
 
-    const last14Sql = `
+    const last14 = await sb(`
       select day, count
       from portal_ai_usage
       order by day desc
-      limit 14;
-    `;
-
-    const todayData = await sb(todaySql);
-    const last14 = await sb(last14Sql);
+      limit 14
+    `);
 
     res.status(200).json({
-      today: { count: todayData?.[0]?.count ?? 0 },
-      last14,
+      today: { count: todayRows?.[0]?.count ?? 0 },
+      last14: last14 || [],
       limit: 30
     });
 
