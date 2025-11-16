@@ -1,19 +1,19 @@
-import { sb } from "../_utils.js";
+import { fetchSupabase } from "../_utils.js";
 
 export default async function handler(req, res) {
   try {
-    const sql = `
-      select count(*) as count
-      from jurisdictions_without_portals;
-    `;
+    // Count jurisdictions that still have NO portal metadata
+    // (jurisdiction_meta rows must exist for a jurisdiction to be "completed")
+    const { data, error } = await fetchSupabase(
+      "/rpc/count_pending_jurisdictions",
+      "POST"
+    );
 
-    const data = await sb(sql);
+    if (error) throw error;
 
-    res.status(200).json({
-      count: data?.[0]?.count ?? 0
-    });
+    return res.status(200).json({ count: data.count });
   } catch (err) {
     console.error("Pending Error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "server_error", message: err.message });
   }
 }
