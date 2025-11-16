@@ -4,8 +4,11 @@
     { "src": "api/**/*.js", "use": "@vercel/node" }
   ],
   "routes": [
-    { "handle": "filesystem" },
-    { "src": "/dashboard", "dest": "/dashboard.html" },
-    { "src": "/api/(.*)", "dest": "/api/$1.js" }
+    { "src": "^/dashboard$", "dest": "/dashboard.html" },
+    { "src": "^/dashboard\\.html$", "dest": "/dashboard.html" },
+
+    { "src": "/api/(.*)", "dest": "/api/$1.js" },
+
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
