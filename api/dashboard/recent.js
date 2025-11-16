@@ -3,15 +3,21 @@ import { sb } from "../_utils.js";
 export default async function handler(req, res) {
   try {
     const sql = `
-      select jurisdiction_geoid, portal_url, vendor_type, notes, updated_at
-      from jurisdiction_meta
-      order by updated_at desc
+      select 
+        jm.jurisdiction_geoid,
+        j.name,
+        jm.portal_url,
+        jm.vendor_type,
+        jm.updated_at
+      from jurisdiction_meta jm
+      join jurisdictions j
+        on j.geoid = jm.jurisdiction_geoid
+      order by jm.updated_at desc
       limit 20;
     `;
 
     const rows = await sb(sql);
 
-    // Compute vendor breakdown
     const vendorBreakdown = {};
     rows.forEach(r => {
       const v = r.vendor_type ?? "unknown";
