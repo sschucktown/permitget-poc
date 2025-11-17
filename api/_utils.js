@@ -1,24 +1,34 @@
-export async function sb(sql) {
-  console.log("🔵 Running SQL:", sql);
+export async function fetchSupabase(path, method = "GET", body = null) {
+  const url = process.env.SUPABASE_URL + "/rest/v1" + path;
 
-  const res = await fetch(
-    `${process.env.SUPABASE_URL}/rest/v1/rpc/exec_sql`,
-    {
-      method: "POST",
-      headers: {
-        apikey: process.env.SUPABASE_SERVICE_ROLE,
-        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ sql })
-    }
-  );
+  const res = await fetch(url, {
+    method,
+    headers: {
+      apikey: process.env.SUPABASE_SERVICE_ROLE,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE}`,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
 
   if (!res.ok) {
     const text = await res.text();
-    console.error("SQL ERROR:", text);
-    throw new Error(text);
+    console.error("Supabase Error:", text);
+    return {
+      data: null,
+      error: text
+    };
   }
 
-  return await res.json();
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+
+  return {
+    data: json,
+    error: null
+  };
 }
