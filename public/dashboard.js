@@ -1,97 +1,239 @@
-async function fetchJSON(url) {
-  const res = await fetch(url);
+// -----------------------------------------------------------------------------
+// Dashboard Frontend Script (Full File) — public/dashboard.js
+// -----------------------------------------------------------------------------
+
+// General-purpose JSON fetch with error support
+async function fetchJSON(url, options = {}) {
+  const res = await fetch(url, options);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Request failed: ${res.status} – ${text}`);
+  }
+
   return res.json();
 }
 
+// -----------------------------------------------------------------------------
+// Load TOP metrics + RECENT discoveries + CHART data
+// -----------------------------------------------------------------------------
 async function loadDashboard() {
-  // --- Fetch all data
-  const [pending, usage, recent] = await Promise.all([
-    fetchJSON("/api/dashboard/pending"),
-    fetchJSON("/api/dashboard/usage"),
-    fetchJSON("/api/dashboard/recent")
-  ]);
+  try {
+    const [pending, usage, recent] = await Promise.all([
+      fetchJSON("/api/dashboard/pending"),
+      fetchJSON("/api/dashboard/usage"),
+      fetchJSON("/api/dashboard/recent")
+    ]);
 
-  // ------------------------------------------
-  // TOP CARDS
-  // ------------------------------------------
-  document.getElementById("pendingCount").textContent =
-    pending.count ?? "–";
+    // ---------------------------------------------
+    // TOP CARDS
+    // ---------------------------------------------
+    document.getElementById("pendingCount").textContent =
+      pending.count ?? "–";
 
-  document.getElementById("usageToday").textContent =
-    usage.today.count ?? "0";
+    document.getElementById("usageToday").textContent =
+      usage.today?.count ?? 0;
 
-  document.getElementById("usageLimit").textContent =
-    `Daily limit: ${usage.limit}`;
+    document.getElementById("usageLimit").textContent =
+      `Daily limit: ${usage.limit}`;
 
-  if (recent.rows.length > 0) {
-    const last = recent.rows[0];
-    document.getElementById("lastPortal").textContent =
-      `${last.name} → ${last.portal_url}`;
+    if (recent.rows?.length > 0) {
+      const last = recent.rows[0];
+      const portal = last.portal_url || "(none)";
+      document.getElementById("lastPortal").textContent =
+        `${last.name} → ${portal}`;
+    }
+
+    // ---------------------------------------------
+    // RECENT TABLE
+    // ---------------------------------------------
+    const tbody = document.getElementById("recentTable");
+    tbody.innerHTML = "";
+
+    (recent.rows || []).forEach(row => {
+      const tr = document.createElement("tr");
+      tr.className = "border-b";
+
+      tr.innerHTML = `
+        <td class="p-2">${row.name}</td>
+        <td class="p-2">
+          ${row.portal_url
+            ? `<a href="${row.portal_url}" class="text-blue-600 underline" target="_blank">${row.portal_url}</a>`
+            : "<span class='text-gray-400'>—</span>"
+          }
+        </td>
+        <td class="p-2">${row.vendor_type ?? "—"}</td>
+        <td class="p-2">${new Date(row.updated_at).toLocaleDateString()}</td>
+      `;
+
+      tbody.appendChild(tr);
+    });
+
+    // ---------------------------------------------
+    // AI USAGE CHART
+    // ---------------------------------------------
+    const usageLabels = usage.last14?.map(d => d.day) ?? [];
+    const usageValues = usage.last14?.map(d => d.count) ?? [];
+
+    new Chart(document.getElementById("aiUsageChart"), {
+      type: "line",
+      data: {
+        labels: usageLabels,
+        datasets: [{
+          label: "AI Calls",
+          data: usageValues,
+          borderColor: "#2563eb",
+          backgroundColor: "rgba(37, 99, 235, 0.2)",
+          tension: 0.25,
+          borderWidth: 2
+        }]
+      }
+    });
+
+    // ---------------------------------------------
+    // VENDOR PIE CHART
+    // ---------------------------------------------
+    const vendorCounts = recent.vendorBreakdown ?? {};
+    const vendorLabels = Object.keys(vendorCounts);
+    const vendorValues = Object.values(vendorCounts);
+
+    new Chart(document.getElementById("vendorChart"), {
+      type: "pie",
+      data: {
+        labels: vendorLabels,
+        datasets: [{
+          data: vendorValues,
+          backgroundColor: [
+            "#3b82f6",
+            "#10b981",
+            "#f59e0b",
+            "#ef4444",
+            "#6366f1",
+            "#14b8a6"
+          ]
+        }]
+      }
+    });
+
+  } catch (err) {
+    console.error("loadDashboard error:", err);
   }
-
-  // ------------------------------------------
-  // RENDER RECENT TABLE
-  // ------------------------------------------
-  const tbody = document.getElementById("recentTable");
-  tbody.innerHTML = "";
-
-  recent.rows.forEach(r => {
-    const tr = document.createElement("tr");
-    tr.className = "border-b";
-    tr.innerHTML = `
-      <td class="p-2">${r.name}</td>
-      <td class="p-2"><a href="${r.portal_url}" class="text-blue-600 underline" target="_blank">${r.portal_url}</a></td>
-      <td class="p-2">${r.vendor_type ?? "–"}</td>
-      <td class="p-2">${new Date(r.updated_at).toLocaleDateString()}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  // ------------------------------------------
-  // AI USAGE CHART
-  // ------------------------------------------
-  const usageLabels = usage.last14.map(d => d.day);
-  const usageValues = usage.last14.map(d => d.count);
-
-  new Chart(document.getElementById("aiUsageChart"), {
-    type: "line",
-    data: {
-      labels: usageLabels,
-      datasets: [{
-        label: "AI Calls",
-        data: usageValues,
-        borderColor: "#2563eb",
-        backgroundColor: "rgba(37, 99, 235, 0.2)",
-        borderWidth: 2
-      }]
-    }
-  });
-
-  // ------------------------------------------
-  // VENDOR PIE CHART
-  // ------------------------------------------
-  const vendorCounts = recent.vendorBreakdown;
-  const vendorLabels = Object.keys(vendorCounts);
-  const vendorValues = Object.values(vendorCounts);
-
-  new Chart(document.getElementById("vendorChart"), {
-    type: "pie",
-    data: {
-      labels: vendorLabels,
-      datasets: [{
-        data: vendorValues,
-        backgroundColor: [
-          "#3b82f6",
-          "#10b981",
-          "#f59e0b",
-          "#ef4444",
-          "#6366f1",
-          "#14b8a6"
-        ]
-      }]
-    }
-  });
-
 }
 
+// -----------------------------------------------------------------------------
+// REVIEW QUEUE FUNCTIONS
+// -----------------------------------------------------------------------------
+
+// Fetch the human review queue and render it
+async function loadReviewQueue() {
+  try {
+    const data = await fetchJSON("/api/dashboard/review/list");
+    const rows = data.rows ?? [];
+
+    const countEl = document.getElementById("reviewCount");
+    const tbody = document.getElementById("reviewTable");
+
+    if (countEl) {
+      countEl.textContent =
+        rows.length > 0 ? `${rows.length} pending` : "No items pending review";
+    }
+
+    if (!tbody) return;
+    tbody.innerHTML = "";
+
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.className = "border-b align-top";
+
+      tr.innerHTML = `
+        <td class="p-2">
+          <div class="font-semibold">${r.name}</div>
+          <div class="text-xs text-gray-500">${r.jurisdiction_geoid}</div>
+        </td>
+
+        <td class="p-2 break-all">
+          ${r.suggested_url
+            ? `<a href="${r.suggested_url}" target="_blank" class="text-blue-600 underline">${r.suggested_url}</a>`
+            : "<span class='text-gray-400'>—</span>"
+          }
+        </td>
+
+        <td class="p-2">${r.vendor_type || "unknown"}</td>
+
+        <td class="p-2 text-sm text-gray-700">${r.ai_notes ?? "—"}</td>
+
+        <td class="p-2">
+          <div class="flex gap-2">
+
+            <button
+              class="px-3 py-1 rounded bg-green-600 text-white text-xs hover:bg-green-700"
+              data-id="${r.id}"
+              data-action="approve"
+            >
+              Approve
+            </button>
+
+            <button
+              class="px-3 py-1 rounded bg-red-600 text-white text-xs hover:bg-red-700"
+              data-id="${r.id}"
+              data-action="reject"
+            >
+              Reject
+            </button>
+
+          </div>
+        </td>
+      `;
+
+      tbody.appendChild(tr);
+    });
+
+  } catch (err) {
+    console.error("loadReviewQueue error:", err);
+  }
+}
+
+// Handle Approve/Reject clicks (event delegation)
+document.addEventListener("click", async event => {
+  const btn = event.target.closest("button[data-action]");
+  if (!btn) return;
+
+  const id = btn.dataset.id;
+  const action = btn.dataset.action;
+  if (!id) return;
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = action === "approve" ? "Approving…" : "Rejecting…";
+
+  try {
+    const endpoint =
+      action === "approve"
+        ? "/api/dashboard/review/approve"
+        : "/api/dashboard/review/reject";
+
+    await fetchJSON(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id })
+    });
+
+    // Reload everything
+    await loadDashboard();
+    await loadReviewQueue();
+
+  } catch (err) {
+    console.error(`${action} error`, err);
+    alert(`Failed to ${action}: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});
+
+// -----------------------------------------------------------------------------
+// INITIAL PAGE LOAD
+// -----------------------------------------------------------------------------
+
 loadDashboard();
+loadReviewQueue();
