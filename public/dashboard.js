@@ -1,22 +1,20 @@
 // -----------------------------------------------------------------------------
-// Dashboard Frontend Script — FULL REWRITE
+// Dashboard Frontend Script — CLEAN FINAL VERSION
 // -----------------------------------------------------------------------------
 
-// Standardized JSON fetch with clear error surfacing
+// Helper for JSON fetch
 async function fetchJSON(url, options = {}) {
   const res = await fetch(url, options);
-
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Request failed: ${res.status} – ${text}`);
   }
-
   return res.json();
 }
 
 // -----------------------------------------------------------------------------
 // LOAD TOP METRICS + RECENT DISCOVERIES + CHARTS
-// -----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------- 
 
 async function loadDashboard() {
   try {
@@ -26,9 +24,7 @@ async function loadDashboard() {
       fetchJSON("/api/dashboard/recent")
     ]);
 
-    // ---------------------------------------------
     // TOP CARDS
-    // ---------------------------------------------
     document.getElementById("pendingCount").textContent =
       pending.count ?? "–";
 
@@ -38,7 +34,7 @@ async function loadDashboard() {
     document.getElementById("usageLimit").textContent =
       `Daily limit: ${usage.limit}`;
 
-    // Display last portal discovery
+    // Last portal discovery
     if (recent.rows?.length > 0) {
       const last = recent.rows[0];
       const portal = last.portal_url || "(none)";
@@ -46,14 +42,12 @@ async function loadDashboard() {
         `${last.name} → ${portal}`;
     }
 
-    // ---------------------------------------------
     // RECENT DISCOVERIES TABLE
-    // ---------------------------------------------
     const tbody = document.getElementById("recentTable");
     tbody.innerHTML = "";
 
     (recent.rows || []).forEach(row => {
-      if (!row || typeof row !== "object") return;
+      if (!row) return;
 
       const tr = document.createElement("tr");
       tr.className = "border-b";
@@ -69,18 +63,16 @@ async function loadDashboard() {
 
         <td class="p-2">${row.vendor_type ?? "—"}</td>
 
-        <td class="p-2">${row.updated_at
+        <td class="p-2">
+          ${row.updated_at
             ? new Date(row.updated_at).toLocaleDateString()
             : "—"}
         </td>
       `;
-
       tbody.appendChild(tr);
     });
 
-    // ---------------------------------------------
-    // AI USAGE CHART
-    // ---------------------------------------------
+    // CHARTS
     const usageLabels = usage.last14?.map(d => d.day) ?? [];
     const usageValues = usage.last14?.map(d => d.count) ?? [];
 
@@ -99,19 +91,13 @@ async function loadDashboard() {
       }
     });
 
-    // ---------------------------------------------
-    // VENDOR PIE CHART
-    // ---------------------------------------------
     const vendorCounts = recent.vendorBreakdown ?? {};
-    const vendorLabels = Object.keys(vendorCounts);
-    const vendorValues = Object.values(vendorCounts);
-
     new Chart(document.getElementById("vendorChart"), {
       type: "pie",
       data: {
-        labels: vendorLabels,
+        labels: Object.keys(vendorCounts),
         datasets: [{
-          data: vendorValues,
+          data: Object.values(vendorCounts),
           backgroundColor: [
             "#3b82f6",
             "#10b981",
@@ -138,15 +124,12 @@ async function loadReviewQueue() {
     const res = await fetch("/api/dashboard/review/list");
     const data = await res.json();
 
-    let rows = data?.rows ?? [];
-    rows = Array.isArray(rows) ? rows : [];
+    let rows = Array.isArray(data?.rows) ? data.rows : [];
 
     const tbody = document.getElementById("reviewTable");
     tbody.innerHTML = "";
 
     rows.forEach(r => {
-      if (!r || typeof r !== "object") return;
-
       const tr = document.createElement("tr");
       tr.className = "border-b";
 
@@ -161,7 +144,8 @@ async function loadReviewQueue() {
 
         <td class="p-2">${r.vendor_type ?? "—"}</td>
 
-        <td class="p-2">${r.created_at
+        <td class="p-2">
+          ${r.created_at
             ? new Date(r.created_at).toLocaleString()
             : "—"}
         </td>
@@ -188,7 +172,7 @@ async function loadReviewQueue() {
 }
 
 // -----------------------------------------------------------------------------
-// APPROVE / REJECT HANDLER
+// APPROVE / REJECT BUTTON HANDLER
 // -----------------------------------------------------------------------------
 
 document.addEventListener("click", async event => {
@@ -197,7 +181,6 @@ document.addEventListener("click", async event => {
 
   const id = btn.dataset.id;
   const action = btn.dataset.action;
-  if (!id || !action) return;
 
   const originalText = btn.textContent;
   btn.disabled = true;
@@ -216,12 +199,11 @@ document.addEventListener("click", async event => {
       body: JSON.stringify({ id })
     });
 
-    // Refresh both panels
+    // Refresh after action
     await loadDashboard();
     await loadReviewQueue();
 
   } catch (err) {
-    console.error(`${action} error:`, err);
     alert(`Failed to ${action}: ${err.message}`);
   } finally {
     btn.disabled = false;
@@ -229,9 +211,6 @@ document.addEventListener("click", async event => {
   }
 });
 
-// -----------------------------------------------------------------------------
-// INITIAL PAGE LOAD
-// -----------------------------------------------------------------------------
-
+// INITIAL LOAD
 loadDashboard();
 loadReviewQueue();
