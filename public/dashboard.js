@@ -140,7 +140,12 @@ async function loadReviewQueue() {
       tr.className = "border-b";
       tr.innerHTML = `
         <td class="p-2">${r.name}</td>
-        <td class="p-2">${r.portal_url ?? "—"}</td>
+        <td class="p-2">
+  ${r.suggested_url 
+    ? `<a href="${r.suggested_url}" class="text-blue-600 underline" target="_blank">${r.suggested_url}</a>` 
+    : "—"}
+</td>
+
         <td class="p-2">${r.vendor_type ?? "—"}</td>
         <td class="p-2">${new Date(r.created_at).toLocaleString()}</td>
         <td class="p-2">
