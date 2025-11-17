@@ -1,5 +1,6 @@
 export async function fetchSupabase(path, method = "GET", body = null) {
   const url = process.env.SUPABASE_URL + "/rest/v1" + path;
+console.log("FINAL_SUPABASE_URL:", url);
 
   const res = await fetch(url, {
     method,
