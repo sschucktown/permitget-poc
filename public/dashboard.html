@@ -30,46 +30,37 @@
 
     <!-- TOP CARDS -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-
-      <!-- Pending Count -->
       <div class="bg-white p-6 rounded shadow">
         <h2 class="text-lg font-semibold">Pending Jurisdictions</h2>
         <p id="pendingCount" class="text-4xl font-bold mt-2">–</p>
       </div>
 
-      <!-- AI Usage Today -->
       <div class="bg-white p-6 rounded shadow">
         <h2 class="text-lg font-semibold">AI Calls Today</h2>
         <p id="usageToday" class="text-4xl font-bold mt-2">–</p>
         <p class="text-sm text-gray-500" id="usageLimit"></p>
       </div>
 
-      <!-- Last Portal -->
       <div class="bg-white p-6 rounded shadow">
         <h2 class="text-lg font-semibold">Last Portal Discovered</h2>
         <p id="lastPortal" class="text-md mt-2">–</p>
       </div>
-
     </div>
 
     <!-- CHARTS -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-      <!-- AI Usage Chart -->
       <div class="bg-white p-4 rounded shadow">
         <h3 class="font-semibold mb-2">AI Usage (Past 14 Days)</h3>
         <canvas id="aiUsageChart" height="200"></canvas>
       </div>
 
-      <!-- Vendor Breakdown -->
       <div class="bg-white p-4 rounded shadow">
         <h3 class="font-semibold mb-2">Portal Vendor Breakdown</h3>
         <canvas id="vendorChart" height="200"></canvas>
       </div>
-
     </div>
 
-    <!-- TABLE: RECENT DISCOVERIES -->
+    <!-- RECENT DISCOVERIES -->
     <div class="bg-white p-6 rounded shadow">
       <h2 class="text-xl font-bold mb-3">Recent Portal Discoveries</h2>
 
@@ -85,32 +76,32 @@
         <tbody id="recentTable"></tbody>
       </table>
     </div>
+
     <!-- HUMAN REVIEW QUEUE -->
-<div class="bg-white p-6 rounded shadow mt-6">
-  <div class="flex justify-between items-center mb-3">
-    <h2 class="text-xl font-bold">Human Review Queue</h2>
-    <span class="text-sm text-gray-500" id="reviewCount"></span>
+    <div class="bg-white p-6 rounded shadow">
+      <div class="flex justify-between items-center mb-3">
+        <h2 class="text-xl font-bold">Human Review Queue</h2>
+        <span class="text-sm text-gray-500" id="reviewCount"></span>
+      </div>
+
+      <table class="min-w-full text-left border">
+        <thead>
+          <tr class="border-b bg-gray-50">
+            <th class="p-2 font-semibold">Jurisdiction</th>
+            <th class="p-2 font-semibold">Suggested URL</th>
+            <th class="p-2 font-semibold">Vendor</th>
+            <th class="p-2 font-semibold">AI Notes</th>
+            <th class="p-2 font-semibold">Human Review</th>
+          </tr>
+        </thead>
+        <tbody id="reviewTable"></tbody>
+      </table>
+    </div>
+
   </div>
 
-  <table class="min-w-full text-left border">
-    <thead>
-      <tr class="border-b bg-gray-50">
-        <th class="p-2 font-semibold">Jurisdiction</th>
-        <th class="p-2 font-semibold">Suggested URL</th>
-        <th class="p-2 font-semibold">Vendor</th>
-        <th class="p-2 font-semibold">AI Notes</th>
-        <th class="p-2 font-semibold">Actions</th>
-      </tr>
-    </thead>
-    <tbody id="reviewTable"></tbody>
-  </table>
-</div>
-
-
-  </div>
-
-  <!-- SCRIPT -->
-  <script src="/dashboard.js?v=3"></script>
+  <!-- MAIN DASHBOARD SCRIPT -->
+  <script src="/dashboard.js"></script>
 
   <!-- RUN DISCOVERY BUTTON SCRIPT -->
   <script>
@@ -129,13 +120,11 @@
 
         const data = await res.json();
         alert(JSON.stringify(data, null, 2));
-
       } catch (err) {
         alert("Error running portal discovery. Check console.");
         console.error(err);
       }
     });
   </script>
-
 </body>
 </html>
