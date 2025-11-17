@@ -10,20 +10,17 @@ export default async function handler(req, res) {
     const limit = parseInt(req.query.limit || "25", 10);
     const offset = parseInt(req.query.offset || "0", 10);
 
-    const path = `jurisdiction_review_queue?order=created_at.desc&limit=${limit}&offset=${offset}`;
+    const path =
+      `jurisdiction_review_queue?order=created_at.desc&limit=${limit}&offset=${offset}`;
 
-    let data = await fetchSupabase(path);
+    const response = await fetchSupabase(path);
 
-    // --- Normalize output so it ALWAYS returns an array ---
-    if (data == null) {
-      data = [];
-    } else if (Array.isArray(data.data)) {
-      data = data.data;
-    } else if (!Array.isArray(data)) {
-      data = [];
-    }
+    // Always normalize to array safely
+    let rows = response?.data ?? [];
+    if (!Array.isArray(rows)) rows = [];
 
-    return res.status(200).json({ rows: data });
+    return res.status(200).json({ rows });
+
   } catch (err) {
     console.error("review/list error:", err);
     return res.status(500).json({ error: "Internal error", message: err.message });
