@@ -14,10 +14,14 @@ export default async function handler(req, res) {
 
     let data = await fetchSupabase(path);
 
-    // --- Safety guards ---
-    if (data == null) data = [];
-    if (Array.isArray(data.data)) data = data.data;
-    if (!Array.isArray(data)) data = [];
+    // --- Normalize output so it ALWAYS returns an array ---
+    if (data == null) {
+      data = [];
+    } else if (Array.isArray(data.data)) {
+      data = data.data;
+    } else if (!Array.isArray(data)) {
+      data = [];
+    }
 
     return res.status(200).json({ rows: data });
   } catch (err) {
