@@ -11,13 +11,16 @@ export default async function handler(req, res) {
     const offset = parseInt(req.query.offset || "0", 10);
 
     const path =
-      `jurisdiction_review_queue?order=created_at.desc&limit=${limit}&offset=${offset}`;
+      `jurisdiction_review_queue?order=created_at.desc&limit=${limit}&offset=${offset}&select=*`;
 
-    const response = await fetchSupabase(path);
+    const { data, error } = await fetchSupabase(path);
 
-    // Always normalize to array safely
-    let rows = response?.data ?? [];
-    if (!Array.isArray(rows)) rows = [];
+    if (error) {
+      console.error("review/list supabase error:", error);
+      return res.status(500).json({ rows: [], error });
+    }
+
+    const rows = Array.isArray(data) ? data : [];
 
     return res.status(200).json({ rows });
 
@@ -26,3 +29,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Internal error", message: err.message });
   }
 }
+
