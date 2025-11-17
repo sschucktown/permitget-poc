@@ -14,14 +14,19 @@ export default async function handler(req, res) {
 
     const now = new Date().toISOString();
 
-    await fetchSupabase(
-      `jurisdiction_meta?id=eq.${id}`,
+    const { data, error } = await fetchSupabase(
+      `jurisdiction_meta?id=eq.${id}&select=id`,
       "PATCH",
       {
         invalid: true,
         invalid_at: now
       }
     );
+
+    if (error) {
+      console.error("Supabase patch error:", error);
+      return res.status(500).json({ error: "Supabase update failed", detail: error });
+    }
 
     return res.status(200).json({ status: "ok", id });
   } catch (err) {
