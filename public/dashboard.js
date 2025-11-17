@@ -127,64 +127,31 @@ async function loadDashboard() {
 // Fetch the human review queue and render it
 async function loadReviewQueue() {
   try {
-    const data = await fetchJSON("/api/dashboard/review/list");
-    const rows = data.rows ?? [];
+    const res = await fetch("/api/dashboard/review/list");
+    const data = await res.json();
 
-    const countEl = document.getElementById("reviewCount");
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+
     const tbody = document.getElementById("reviewTable");
-
-    if (countEl) {
-      countEl.textContent =
-        rows.length > 0 ? `${rows.length} pending` : "No items pending review";
-    }
-
-    if (!tbody) return;
     tbody.innerHTML = "";
 
     rows.forEach(r => {
       const tr = document.createElement("tr");
-      tr.className = "border-b align-top";
-
+      tr.className = "border-b";
       tr.innerHTML = `
+        <td class="p-2">${r.name}</td>
+        <td class="p-2">${r.portal_url ?? "—"}</td>
+        <td class="p-2">${r.vendor_type ?? "—"}</td>
+        <td class="p-2">${new Date(r.created_at).toLocaleString()}</td>
         <td class="p-2">
-          <div class="font-semibold">${r.name}</div>
-          <div class="text-xs text-gray-500">${r.jurisdiction_geoid}</div>
-        </td>
-
-        <td class="p-2 break-all">
-          ${r.suggested_url
-            ? `<a href="${r.suggested_url}" target="_blank" class="text-blue-600 underline">${r.suggested_url}</a>`
-            : "<span class='text-gray-400'>—</span>"
-          }
-        </td>
-
-        <td class="p-2">${r.vendor_type || "unknown"}</td>
-
-        <td class="p-2 text-sm text-gray-700">${r.ai_notes ?? "—"}</td>
-
-        <td class="p-2">
-          <div class="flex gap-2">
-
-            <button
-              class="px-3 py-1 rounded bg-green-600 text-white text-xs hover:bg-green-700"
-              data-id="${r.id}"
-              data-action="approve"
-            >
-              Approve
-            </button>
-
-            <button
-              class="px-3 py-1 rounded bg-red-600 text-white text-xs hover:bg-red-700"
-              data-id="${r.id}"
-              data-action="reject"
-            >
-              Reject
-            </button>
-
-          </div>
+          <button data-id="${r.id}" class="approveBtn bg-green-600 text-white px-3 py-1 rounded mr-2">
+            Approve
+          </button>
+          <button data-id="${r.id}" class="rejectBtn bg-red-600 text-white px-3 py-1 rounded">
+            Reject
+          </button>
         </td>
       `;
-
       tbody.appendChild(tr);
     });
 
@@ -192,6 +159,7 @@ async function loadReviewQueue() {
     console.error("loadReviewQueue error:", err);
   }
 }
+
 
 // Handle Approve/Reject clicks (event delegation)
 document.addEventListener("click", async event => {
