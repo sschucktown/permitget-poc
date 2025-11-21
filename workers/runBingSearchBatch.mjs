@@ -1,8 +1,8 @@
 // workers/runBingSearchBatch.mjs
 //
-// Production-grade worker for PermitGet.
-// Uses SerpAPI (Google results).
-// Includes retries, safe JSON parsing, and graceful error handling.
+// Production-grade worker for PermitGet using Brave Search API.
+// Brave is more stable than SerpAPI on GitHub Actions and always returns JSON.
+// Includes retries, safe parsing, and graceful error handling.
 
 import { sb } from "../lib/supabase.js";
 import {
@@ -13,11 +13,11 @@ import {
   looksLikePermitPortal
 } from "../lib/portalUtils.js";
 
-const SERPAPI_KEY = process.env.SERPAPI_KEY;
+const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 const BATCH_SIZE = parseInt(process.env.BING_BATCH_SIZE || "10", 10);
 
-if (!SERPAPI_KEY) {
-  console.warn("[SearchWorker] WARNING: SERPAPI_KEY missing in environment");
+if (!BRAVE_API_KEY) {
+  console.warn("[SearchWorker] WARNING: BRAVE_API_KEY missing in environment");
 }
 
 /* -------------------------------------------------------------
@@ -45,53 +45,59 @@ async function updateJob(id, fields) {
 }
 
 /* -------------------------------------------------------------
- * SerpAPI - Safe call + retries + logging
+ * Brave Search Core Call (safe + JSON guaranteed)
+ * Docs: https://api.search.brave.com/app/documentation/web-search
  * ------------------------------------------------------------- */
-async function callSerpAPI(query) {
-  const url = new URL("https://serpapi.com/search");
-  url.searchParams.set("engine", "google");
-  url.searchParams.set("q", query);
-  url.searchParams.set("num", "5");
-  url.searchParams.set("hl", "en");
-  url.searchParams.set("gl", "us");
-  url.searchParams.set("api_key", SERPAPI_KEY);
+async function callBraveSearch(query) {
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(
+    query
+  )}&count=5`;
 
-  const res = await fetch(url.toString(), { method: "GET" });
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "X-Subscription-Token": BRAVE_API_KEY,
+      Accept: "application/json"
+    }
+  });
 
   const text = await res.text();
 
   if (!text || text.trim().length < 5) {
-    throw new Error(`Empty response body from SerpAPI`);
+    throw new Error(`Empty response from Brave Search`);
   }
 
   try {
     return JSON.parse(text);
   } catch (err) {
     throw new Error(
-      `Invalid JSON from SerpAPI for query "${query}": ${text.substring(0, 200)}`
+      `Invalid JSON from Brave for "${query}": ${text.substring(0, 200)}`
     );
   }
 }
 
 /* -------------------------------------------------------------
- * Retry wrapper for SerpAPI
+ * Retry wrapper for Brave Search
  * ------------------------------------------------------------- */
 async function callSearchWithRetry(query, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
     try {
-      return await callSerpAPI(query);
+      return await callBraveSearch(query);
     } catch (err) {
-      console.warn(`[SearchWorker] SerpAPI attempt ${i + 1} failed:`, err.message);
+      console.warn(
+        `[SearchWorker] Brave attempt ${i + 1} failed for "${query}":`,
+        err.message
+      );
 
-      if (i === attempts - 1) throw err;
+      if (i === attempts - 1) throw err; // Give up
 
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 750)); // backoff
     }
   }
 }
 
 /* -------------------------------------------------------------
- * Upsert jurisdiction metadata
+ * Save best portal info to jurisdiction_meta
  * ------------------------------------------------------------- */
 async function upsertJurisdictionMeta(geoid, candidate, jobId) {
   const existing = await sb(
@@ -102,7 +108,7 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
     ? `Seeded from search_queue job ${jobId}`
     : `search_queue job ${jobId}: no reliable portal found`;
 
-  if (Array.isArray(existing) && existing.length > 0) {
+  if (existing?.length > 0) {
     const meta = existing[0];
 
     await sb(`jurisdiction_meta?id=eq.${meta.id}`, "PATCH", {
@@ -114,7 +120,6 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
         candidate && candidate.url ? true : meta.license_required,
       notes: meta.notes ? `${meta.notes}\n${notesBase}` : notesBase
     });
-
   } else {
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: geoid,
@@ -129,13 +134,13 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
 }
 
 /* -------------------------------------------------------------
- * Process search results
+ * Evaluate Brave Search results
  * ------------------------------------------------------------- */
 async function handleResults(job, results) {
   let bestCandidate = null;
 
   for (const r of results) {
-    const rawUrl = r.link || r.url;
+    const rawUrl = r.link;
     if (!rawUrl) continue;
 
     const normalized = normalizeTylerOAuth(rawUrl) || rawUrl;
@@ -150,6 +155,7 @@ async function handleResults(job, results) {
 
     const vendor = detectVendor(valid);
 
+    // Save all candidates
     try {
       await sb("portal_candidates", "POST", {
         jurisdiction_geoid: job.jurisdiction_geoid,
@@ -157,10 +163,10 @@ async function handleResults(job, results) {
         url_found: valid,
         vendor_type: vendor,
         confidence: 1.0,
-        source: "serpapi"
+        source: "brave"
       });
     } catch {
-      console.warn("[SearchWorker] Duplicate candidate ignored");
+      console.warn("[SearchWorker] Duplicate portal_candidate ignored");
     }
 
     if (!bestCandidate) {
@@ -172,7 +178,7 @@ async function handleResults(job, results) {
 }
 
 /* -------------------------------------------------------------
- * Process a single job
+ * Process one job
  * ------------------------------------------------------------- */
 async function processJob(job) {
   await updateJob(job.id, {
@@ -183,18 +189,19 @@ async function processJob(job) {
   const searchJson = await callSearchWithRetry(job.query);
 
   const results =
-    Array.isArray(searchJson.organic_results)
-      ? searchJson.organic_results
+    searchJson?.web?.results && Array.isArray(searchJson.web.results)
+      ? searchJson.web.results
       : [];
 
   const bestCandidate = await handleResults(job, results);
 
   await upsertJurisdictionMeta(job.jurisdiction_geoid, bestCandidate, job.id);
+
   await updateJob(job.id, { status: "done", last_error: null });
 }
 
 /* -------------------------------------------------------------
- * Batch runner
+ * Run batch
  * ------------------------------------------------------------- */
 async function runBatch() {
   const jobs = await fetchPendingJobs(BATCH_SIZE);
@@ -221,12 +228,9 @@ async function runBatch() {
   }
 }
 
-/* -------------------------------------------------------------
- * Execute
- * ------------------------------------------------------------- */
 runBatch()
   .then(() => console.log("[SearchWorker] Batch complete"))
   .catch((err) => {
-    console.error("[SearchWorker] Fatal error:", err);
+    console.error("[SearchWorker] Fatal:", err);
     process.exit(1);
   });
