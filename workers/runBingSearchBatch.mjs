@@ -1,15 +1,17 @@
 // workers/runBingSearchBatch.mjs
 //
-// PermitGet hybrid search worker.
-// 1) Primary: DuckDuckGo HTML (no key, super stable)
-// 2) Fallback: Tavily API (semantic, structured JSON)
-// No direct provider .json() calls that can blow up unexpectedly.
+// PermitGet hybrid search worker (SAFE version)
+// 1) Primary: DuckDuckGo HTML (stable, no API key)
+// 2) Fallback: Tavily API (semantic search, NOW crash-proof)
+//
+// This worker NEVER throws "Unexpected end of JSON input".
+// Tavily errors / HTML / invalid responses -> graceful fallback to DDG.
 //
 // Env vars used:
-//   BING_BATCH_SIZE      - batch size (reuse existing env)
-//   TAVILY_API_KEY       - optional, for fallback
-//   SUPABASE_URL         - for sb()
-//   SUPABASE_SERVICE_ROLE- for sb()
+//   BING_BATCH_SIZE
+//   TAVILY_API_KEY
+//   SUPABASE_URL
+//   SUPABASE_SERVICE_ROLE
 
 import { sb } from "../lib/supabase.js";
 import {
@@ -60,90 +62,96 @@ async function ddgSearch(query, maxResults = 5) {
   const res = await fetch(url, {
     method: "GET",
     headers: {
-      "User-Agent":
-        "Mozilla/5.0 (compatible; PermitGetBot/1.0; +https://permitget.com/bot)",
+      "User-Agent": "Mozilla/5.0 (PermitGetBot/1.0)",
       "Accept-Language": "en-US,en;q=0.9"
     }
   });
 
   const html = await res.text();
   if (!html || html.trim().length < 10) {
-    throw new Error("DDG: empty or too-short HTML response");
+    console.warn("[DDG] Empty or tiny HTML response");
+    return [];
   }
 
   const results = [];
   const linkRegex = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"/g;
-  let match;
 
+  let match;
   while ((match = linkRegex.exec(html)) !== null && results.length < maxResults) {
     const href = match[1];
-
     let targetUrl = null;
 
-    if (href.startsWith("https://duckduckgo.com/l/?uddg=") || href.startsWith("/l/?uddg=")) {
+    // DDG redirect format
+    if (href.includes("uddg=")) {
       const idx = href.indexOf("uddg=");
       if (idx !== -1) {
-        const after = href.substring(idx + 5);
-        const ampIdx = after.indexOf("&");
-        const encoded = ampIdx === -1 ? after : after.substring(0, ampIdx);
+        const rest = href.substring(idx + 5);
+        const end = rest.indexOf("&");
+        const encoded = end === -1 ? rest : rest.substring(0, end);
         try {
           targetUrl = decodeURIComponent(encoded);
         } catch {
           targetUrl = null;
         }
       }
-    } else if (href.startsWith("http://") || href.startsWith("https://")) {
+    }
+
+    // Direct URLs
+    if (!targetUrl && (href.startsWith("http://") || href.startsWith("https://"))) {
       targetUrl = href;
     }
 
-    if (targetUrl) {
-      results.push({ url: targetUrl });
-    }
+    if (targetUrl) results.push({ url: targetUrl });
   }
 
   return results;
 }
 
 /* -------------------------------------------------------------
- * Tavily search (fallback)
+ * Tavily search (fallback, CRASH-PROOF VERSION)
  * ------------------------------------------------------------- */
 async function tavilySearch(query, maxResults = 5) {
-  if (!TAVILY_API_KEY) {
-    throw new Error("TAVILY_API_KEY not set");
+  if (!TAVILY_API_KEY) return [];
+
+  let res;
+  try {
+    res = await fetch("https://api.tavily.com/v1/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: TAVILY_API_KEY,
+        query,
+        search_depth: "basic",
+        max_results: maxResults,
+        include_answer: false,
+        include_images: false,
+        include_raw_content: false
+      })
+    });
+  } catch (err) {
+    console.warn("[Tavily] Network error:", err.message);
+    return [];
   }
 
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      api_key: TAVILY_API_KEY,
-      query,
-      search_depth: "basic",
-      max_results: maxResults,
-      include_answer: false,
-      include_images: false,
-      include_raw_content: false
-    })
-  });
-
   const text = await res.text();
-  if (!text || text.trim().length < 5) {
-    throw new Error("Tavily: empty or too-short response body");
+
+  // Tavily returns HTML when key is invalid, expired, or rate-limited.
+  if (!text || text.trim().length < 5 || text.startsWith("<")) {
+    console.warn("[Tavily] HTML or empty response, skipping:", text.slice(0, 200));
+    return [];
   }
 
   let json;
   try {
     json = JSON.parse(text);
-  } catch (err) {
-    throw new Error(
-      `Tavily: invalid JSON for "${query}": ${text.substring(0, 200)}`
-    );
+  } catch {
+    console.warn("[Tavily] Invalid JSON:", text.slice(0, 200));
+    return [];
   }
 
-  const results = Array.isArray(json.results) ? json.results : [];
-  return results
+  if (!Array.isArray(json.results)) return [];
+
+  return json.results
     .map(r => r.url)
     .filter(u => typeof u === "string" && u.startsWith("http"))
     .slice(0, maxResults)
@@ -151,32 +159,26 @@ async function tavilySearch(query, maxResults = 5) {
 }
 
 /* -------------------------------------------------------------
- * Hybrid search: DDG primary, Tavily fallback
+ * Hybrid search: DDG → Tavily fallback
  * ------------------------------------------------------------- */
 async function hybridSearch(query) {
-  // 1) Try DuckDuckGo first
+  // Try DDG first
   try {
     const ddgResults = await ddgSearch(query, 5);
-    if (ddgResults.length > 0) {
-      return ddgResults;
-    }
+    if (ddgResults.length > 0) return ddgResults;
   } catch (err) {
-    console.warn("[SearchWorker] DDG search failed:", err.message);
+    console.warn("[SearchWorker] DDG failed:", err.message);
   }
 
-  // 2) Fallback to Tavily, if available
-  if (TAVILY_API_KEY) {
-    try {
-      const tavilyResults = await tavilySearch(query, 5);
-      if (tavilyResults.length > 0) {
-        return tavilyResults;
-      }
-    } catch (err) {
-      console.warn("[SearchWorker] Tavily search failed:", err.message);
-    }
+  // Tavily fallback
+  try {
+    const tavilyResults = await tavilySearch(query, 5);
+    if (tavilyResults.length > 0) return tavilyResults;
+  } catch (err) {
+    console.warn("[SearchWorker] Tavily failed:", err.message);
   }
 
-  // 3) If everything fails, return empty list
+  // Nothing found
   return [];
 }
 
@@ -188,20 +190,19 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
     `jurisdiction_meta?jurisdiction_geoid=eq.${geoid}&limit=1`
   );
 
-  const notesBase = candidate
-    ? `Seeded from search_queue job ${jobId}`
-    : `search_queue job ${jobId}: no reliable portal found`;
+  const notesBase =
+    candidate
+      ? `Seeded from search_queue job ${jobId}`
+      : `search_queue job ${jobId}: no reliable portal found`;
 
-  if (Array.isArray(existing) && existing.length > 0) {
+  if (existing?.length > 0) {
     const meta = existing[0];
 
     await sb(`jurisdiction_meta?id=eq.${meta.id}`, "PATCH", {
       portal_url: candidate ? candidate.url : meta.portal_url,
       vendor_type: candidate ? candidate.vendor : meta.vendor_type,
-      submission_method:
-        candidate && candidate.url ? "online" : meta.submission_method || "unknown",
-      license_required:
-        candidate && candidate.url ? true : meta.license_required,
+      submission_method: candidate ? "online" : meta.submission_method || "unknown",
+      license_required: candidate ? true : meta.license_required,
       notes: meta.notes ? `${meta.notes}\n${notesBase}` : notesBase
     });
   } else {
@@ -209,9 +210,8 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
       jurisdiction_geoid: geoid,
       portal_url: candidate ? candidate.url : null,
       vendor_type: candidate ? candidate.vendor : "unknown",
-      submission_method:
-        candidate && candidate.url ? "online" : "unknown",
-      license_required: candidate && candidate.url ? true : null,
+      submission_method: candidate ? "online" : "unknown",
+      license_required: candidate ? true : null,
       notes: notesBase
     });
   }
@@ -221,13 +221,13 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
  * Process results for a single job
  * ------------------------------------------------------------- */
 async function handleResults(job, results) {
-  let bestCandidate = null;
+  let best = null;
 
   for (const r of results) {
-    const rawUrl = r.url || r.link;
-    if (!rawUrl) continue;
+    const raw = r.url;
+    if (!raw) continue;
 
-    const normalized = normalizeTylerOAuth(rawUrl) || rawUrl;
+    const normalized = normalizeTylerOAuth(raw) || raw;
     const valid = validateURL(normalized);
     if (!valid) continue;
 
@@ -248,16 +248,12 @@ async function handleResults(job, results) {
         confidence: 1.0,
         source: "ddg+tavily"
       });
-    } catch {
-      console.warn("[SearchWorker] Duplicate portal_candidate ignored");
-    }
+    } catch { /* duplicate safe */ }
 
-    if (!bestCandidate) {
-      bestCandidate = { url: valid, vendor, confidence: 1.0 };
-    }
+    if (!best) best = { url: valid, vendor, confidence: 1.0 };
   }
 
-  return bestCandidate;
+  return best;
 }
 
 /* -------------------------------------------------------------
@@ -269,11 +265,9 @@ async function processJob(job) {
     attempt_count: (job.attempt_count || 0) + 1
   });
 
-  const searchResults = await hybridSearch(job.query);
-
-  const bestCandidate = await handleResults(job, searchResults);
-
-  await upsertJurisdictionMeta(job.jurisdiction_geoid, bestCandidate, job.id);
+  const results = await hybridSearch(job.query);
+  const best = await handleResults(job, results);
+  await upsertJurisdictionMeta(job.jurisdiction_geoid, best, job.id);
 
   await updateJob(job.id, { status: "done", last_error: null });
 }
@@ -283,7 +277,6 @@ async function processJob(job) {
  * ------------------------------------------------------------- */
 async function runBatch() {
   const jobs = await fetchPendingJobs(BATCH_SIZE);
-
   if (!jobs.length) {
     console.log("[SearchWorker] No pending jobs.");
     return;
@@ -308,7 +301,7 @@ async function runBatch() {
 
 runBatch()
   .then(() => console.log("[SearchWorker] Batch complete"))
-  .catch((err) => {
+  .catch(err => {
     console.error("[SearchWorker] Fatal error:", err);
     process.exit(1);
   });
