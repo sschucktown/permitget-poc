@@ -1,34 +1,65 @@
 export async function fetchSupabase(path, method = "GET", body = null) {
-  const url = process.env.SUPABASE_URL + "/rest/v1" + path;
+  const base = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE;
 
-  const res = await fetch(url, {
+  if (!base || !serviceKey) {
+    console.error("Supabase config missing:", { base, serviceKey });
+    return { data: null, error: "Missing Supabase configuration" };
+  }
+
+  // Ensure path starts with a slash
+  let cleanPath = path.startsWith("/") ? path : `/${path}`;
+
+  // Auto-add select=* for GET requests unless already specified
+  if (method === "GET" && !cleanPath.includes("select=")) {
+    cleanPath += cleanPath.includes("?") ? "&select=*" : "?select=*";
+  }
+
+  // Build full URL
+  const url = `${base}/rest/v1${cleanPath}`;
+  console.log("FINAL_SUPABASE_URL:", url);
+
+  // Prepare fetch options
+  const options = {
     method,
     headers: {
-      apikey: process.env.SUPABASE_SERVICE_ROLE,
-      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE}`,
-      "Content-Type": "application/json"
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    }
+  };
 
+  if (body) {
+    options.body = JSON.stringify(body);
+  }
+
+  // Execute request
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (networkError) {
+    console.error("Network / fetch error:", networkError);
+    return { data: null, error: "Network error" };
+  }
+
+  // Handle Supabase errors cleanly
   if (!res.ok) {
     const text = await res.text();
-    console.error("Supabase Error:", text);
-    return {
-      data: null,
-      error: text
-    };
+    console.error("Supabase Error:", {
+      status: res.status,
+      statusText: res.statusText,
+      detail: text
+    });
+    return { data: null, error: text };
   }
 
-  let json = null;
+  // Parse JSON safely
   try {
-    json = await res.json();
-  } catch {
-    json = null;
+    const json = await res.json();
+    return { data: json, error: null };
+  } catch (parseError) {
+    console.error("JSON Parse Error:", parseError);
+    return { data: null, error: "Invalid JSON from Supabase" };
   }
-
-  return {
-    data: json,
-    error: null
-  };
 }
