@@ -1,3 +1,8 @@
+// workers/runBingSearchBatch.mjs
+//
+// Uses SerpAPI (Google results) instead of Bing Web Search.
+// Expects SERPAPI_KEY env var.
+
 import { sb } from "../lib/supabase.js";
 import {
   validateURL,
@@ -7,12 +12,11 @@ import {
   looksLikePermitPortal
 } from "../lib/portalUtils.js";
 
-const BING_API_KEY = process.env.BING_API_KEY;
-const BING_ENDPOINT = process.env.BING_ENDPOINT || "https://api.bing.microsoft.com/v7.0/search";
-const BATCH_SIZE = parseInt(process.env.BING_BATCH_SIZE || "10", 10);
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
+const BATCH_SIZE = parseInt(process.env.BING_BATCH_SIZE || "10", 10); // reuse existing env name
 
-if (!BING_API_KEY) {
-  console.warn("[BingWorker] Missing BING_API_KEY");
+if (!SERPAPI_KEY) {
+  console.warn("[SearchWorker] Missing SERPAPI_KEY");
 }
 
 async function fetchPendingJobs(limit) {
@@ -33,21 +37,30 @@ async function updateJob(id, fields) {
   });
 }
 
-async function callBingSearch(query) {
-  const url = new URL(BING_ENDPOINT);
+/**
+ * Call SerpAPI (Google Search).
+ * Docs: https://serpapi.com/search-api
+ */
+async function callSearch(query) {
+  if (!SERPAPI_KEY) {
+    throw new Error("SERPAPI_KEY is not set");
+  }
+
+  const url = new URL("https://serpapi.com/search");
+  url.searchParams.set("engine", "google");
   url.searchParams.set("q", query);
-  url.searchParams.set("count", "5");
+  url.searchParams.set("num", "5");      // number of results
+  url.searchParams.set("hl", "en");      // language
+  url.searchParams.set("gl", "us");      // country
+  url.searchParams.set("api_key", SERPAPI_KEY);
 
   const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      "Ocp-Apim-Subscription-Key": BING_API_KEY
-    }
+    method: "GET"
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Bing error ${res.status}: ${text}`);
+    throw new Error(`Search error ${res.status}: ${text}`);
   }
 
   return res.json();
@@ -59,8 +72,8 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
   );
 
   const notesBase = candidate
-    ? `Seeded from Bing search_queue job ${jobId}`
-    : `Bing search_queue job ${jobId}: no reliable portal found`;
+    ? `Seeded from search_queue job ${jobId}`
+    : `search_queue job ${jobId}: no reliable portal found`;
 
   if (Array.isArray(existing) && existing.length > 0) {
     const meta = existing[0];
@@ -69,18 +82,21 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
     await sb(path, "PATCH", {
       portal_url: candidate ? candidate.url : meta.portal_url,
       vendor_type: candidate ? candidate.vendor : meta.vendor_type,
-      submission_method: candidate && candidate.url ? "online" : meta.submission_method || "unknown",
-      license_required: candidate && candidate.url ? true : meta.license_required,
-      notes: meta.notes
-        ? `${meta.notes}\n${notesBase}`
-        : notesBase
+      submission_method:
+        candidate && candidate.url
+          ? "online"
+          : meta.submission_method || "unknown",
+      license_required:
+        candidate && candidate.url ? true : meta.license_required,
+      notes: meta.notes ? `${meta.notes}\n${notesBase}` : notesBase
     });
   } else {
     await sb("jurisdiction_meta", "POST", {
       jurisdiction_geoid: geoid,
       portal_url: candidate ? candidate.url : null,
       vendor_type: candidate ? candidate.vendor : "unknown",
-      submission_method: candidate && candidate.url ? "online" : "unknown",
+      submission_method:
+        candidate && candidate.url ? "online" : "unknown",
       license_required: candidate && candidate.url ? true : null,
       notes: notesBase
     });
@@ -91,7 +107,10 @@ async function handleResults(job, results) {
   let bestCandidate = null;
 
   for (const r of results) {
-    const rawUrl = r.url;
+    // SerpAPI uses "link" for the URL; fall back to "url" if present.
+    const rawUrl = r.link || r.url;
+    if (!rawUrl) continue;
+
     const normalized = normalizeTylerOAuth(rawUrl) || rawUrl;
     const valid = validateURL(normalized);
     if (!valid) continue;
@@ -112,10 +131,13 @@ async function handleResults(job, results) {
         url_found: valid,
         vendor_type: vendor,
         confidence,
-        source: "bing"
+        source: "serpapi"
       });
     } catch (e) {
-      console.warn("[BingWorker] portal_candidates insert error (probably duplicate):", e.message);
+      console.warn(
+        "[SearchWorker] portal_candidates insert error (probably duplicate):",
+        e.message
+      );
     }
 
     if (!bestCandidate) {
@@ -132,8 +154,13 @@ async function processJob(job) {
     attempt_count: (job.attempt_count || 0) + 1
   });
 
-  const bingJson = await callBingSearch(job.query);
-  const results = bingJson?.webPages?.value || [];
+  const searchJson = await callSearch(job.query);
+
+  // SerpAPI Google engine: main results live in "organic_results".
+  const results =
+    (Array.isArray(searchJson.organic_results)
+      ? searchJson.organic_results
+      : []) || [];
 
   const bestCandidate = await handleResults(job, results);
   await upsertJurisdictionMeta(job.jurisdiction_geoid, bestCandidate, job.id);
@@ -144,17 +171,19 @@ async function processJob(job) {
 async function runBatch() {
   const jobs = await fetchPendingJobs(BATCH_SIZE);
   if (!jobs.length) {
-    console.log("[BingWorker] No pending jobs.");
+    console.log("[SearchWorker] No pending jobs.");
     return;
   }
 
   for (const job of jobs) {
-    console.log(`\n[BingWorker] Processing job ${job.id} (${job.jurisdiction_type} ${job.jurisdiction_geoid})`);
+    console.log(
+      `\n[SearchWorker] Processing job ${job.id} (${job.jurisdiction_type} ${job.jurisdiction_geoid})`
+    );
 
     try {
       await processJob(job);
     } catch (err) {
-      console.error("[BingWorker] Error on job", job.id, err);
+      console.error("[SearchWorker] Error on job", job.id, err);
       await updateJob(job.id, {
         status: "error",
         last_error: err.message || String(err)
@@ -165,9 +194,9 @@ async function runBatch() {
 
 runBatch()
   .then(() => {
-    console.log("[BingWorker] Batch complete.");
+    console.log("[SearchWorker] Batch complete.");
   })
   .catch(err => {
-    console.error("[BingWorker] Fatal error:", err);
+    console.error("[SearchWorker] Fatal error:", err);
     process.exit(1);
   });
