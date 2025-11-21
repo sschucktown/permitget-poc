@@ -23,7 +23,7 @@ jobs:
 
       - name: Run Search Worker
         env:
-          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           BING_BATCH_SIZE: ${{ secrets.BING_BATCH_SIZE }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
