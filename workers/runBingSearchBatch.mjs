@@ -1,8 +1,15 @@
 // workers/runBingSearchBatch.mjs
 //
-// Production-grade worker for PermitGet using Brave Search API.
-// Brave is more stable than SerpAPI on GitHub Actions and always returns JSON.
-// Includes retries, safe parsing, and graceful error handling.
+// PermitGet hybrid search worker.
+// 1) Primary: DuckDuckGo HTML (no key, super stable)
+// 2) Fallback: Tavily API (semantic, structured JSON)
+// No direct provider .json() calls that can blow up unexpectedly.
+//
+// Env vars used:
+//   BING_BATCH_SIZE      - batch size (reuse existing env)
+//   TAVILY_API_KEY       - optional, for fallback
+//   SUPABASE_URL         - for sb()
+//   SUPABASE_SERVICE_ROLE- for sb()
 
 import { sb } from "../lib/supabase.js";
 import {
@@ -13,11 +20,11 @@ import {
   looksLikePermitPortal
 } from "../lib/portalUtils.js";
 
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 const BATCH_SIZE = parseInt(process.env.BING_BATCH_SIZE || "10", 10);
 
-if (!BRAVE_API_KEY) {
-  console.warn("[SearchWorker] WARNING: BRAVE_API_KEY missing in environment");
+if (!TAVILY_API_KEY) {
+  console.warn("[SearchWorker] NOTE: TAVILY_API_KEY missing. Only DuckDuckGo will be used.");
 }
 
 /* -------------------------------------------------------------
@@ -45,59 +52,136 @@ async function updateJob(id, fields) {
 }
 
 /* -------------------------------------------------------------
- * Brave Search Core Call (safe + JSON guaranteed)
- * Docs: https://api.search.brave.com/app/documentation/web-search
+ * DuckDuckGo HTML search (primary)
  * ------------------------------------------------------------- */
-async function callBraveSearch(query) {
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(
-    query
-  )}&count=5`;
+async function ddgSearch(query, maxResults = 5) {
+  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}&num=${maxResults}`;
 
   const res = await fetch(url, {
     method: "GET",
     headers: {
-      "X-Subscription-Token": BRAVE_API_KEY,
-      Accept: "application/json"
+      "User-Agent":
+        "Mozilla/5.0 (compatible; PermitGetBot/1.0; +https://permitget.com/bot)",
+      "Accept-Language": "en-US,en;q=0.9"
     }
   });
 
-  const text = await res.text();
-
-  if (!text || text.trim().length < 5) {
-    throw new Error(`Empty response from Brave Search`);
+  const html = await res.text();
+  if (!html || html.trim().length < 10) {
+    throw new Error("DDG: empty or too-short HTML response");
   }
 
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    throw new Error(
-      `Invalid JSON from Brave for "${query}": ${text.substring(0, 200)}`
-    );
-  }
-}
+  const results = [];
+  const linkRegex = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"/g;
+  let match;
 
-/* -------------------------------------------------------------
- * Retry wrapper for Brave Search
- * ------------------------------------------------------------- */
-async function callSearchWithRetry(query, attempts = 3) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await callBraveSearch(query);
-    } catch (err) {
-      console.warn(
-        `[SearchWorker] Brave attempt ${i + 1} failed for "${query}":`,
-        err.message
-      );
+  while ((match = linkRegex.exec(html)) !== null && results.length < maxResults) {
+    const href = match[1];
 
-      if (i === attempts - 1) throw err; // Give up
+    let targetUrl = null;
 
-      await new Promise((r) => setTimeout(r, 750)); // backoff
+    if (href.startsWith("https://duckduckgo.com/l/?uddg=") || href.startsWith("/l/?uddg=")) {
+      const idx = href.indexOf("uddg=");
+      if (idx !== -1) {
+        const after = href.substring(idx + 5);
+        const ampIdx = after.indexOf("&");
+        const encoded = ampIdx === -1 ? after : after.substring(0, ampIdx);
+        try {
+          targetUrl = decodeURIComponent(encoded);
+        } catch {
+          targetUrl = null;
+        }
+      }
+    } else if (href.startsWith("http://") || href.startsWith("https://")) {
+      targetUrl = href;
+    }
+
+    if (targetUrl) {
+      results.push({ url: targetUrl });
     }
   }
+
+  return results;
 }
 
 /* -------------------------------------------------------------
- * Save best portal info to jurisdiction_meta
+ * Tavily search (fallback)
+ * ------------------------------------------------------------- */
+async function tavilySearch(query, maxResults = 5) {
+  if (!TAVILY_API_KEY) {
+    throw new Error("TAVILY_API_KEY not set");
+  }
+
+  const res = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      api_key: TAVILY_API_KEY,
+      query,
+      search_depth: "basic",
+      max_results: maxResults,
+      include_answer: false,
+      include_images: false,
+      include_raw_content: false
+    })
+  });
+
+  const text = await res.text();
+  if (!text || text.trim().length < 5) {
+    throw new Error("Tavily: empty or too-short response body");
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `Tavily: invalid JSON for "${query}": ${text.substring(0, 200)}`
+    );
+  }
+
+  const results = Array.isArray(json.results) ? json.results : [];
+  return results
+    .map(r => r.url)
+    .filter(u => typeof u === "string" && u.startsWith("http"))
+    .slice(0, maxResults)
+    .map(url => ({ url }));
+}
+
+/* -------------------------------------------------------------
+ * Hybrid search: DDG primary, Tavily fallback
+ * ------------------------------------------------------------- */
+async function hybridSearch(query) {
+  // 1) Try DuckDuckGo first
+  try {
+    const ddgResults = await ddgSearch(query, 5);
+    if (ddgResults.length > 0) {
+      return ddgResults;
+    }
+  } catch (err) {
+    console.warn("[SearchWorker] DDG search failed:", err.message);
+  }
+
+  // 2) Fallback to Tavily, if available
+  if (TAVILY_API_KEY) {
+    try {
+      const tavilyResults = await tavilySearch(query, 5);
+      if (tavilyResults.length > 0) {
+        return tavilyResults;
+      }
+    } catch (err) {
+      console.warn("[SearchWorker] Tavily search failed:", err.message);
+    }
+  }
+
+  // 3) If everything fails, return empty list
+  return [];
+}
+
+/* -------------------------------------------------------------
+ * Upsert jurisdiction metadata
  * ------------------------------------------------------------- */
 async function upsertJurisdictionMeta(geoid, candidate, jobId) {
   const existing = await sb(
@@ -108,7 +192,7 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
     ? `Seeded from search_queue job ${jobId}`
     : `search_queue job ${jobId}: no reliable portal found`;
 
-  if (existing?.length > 0) {
+  if (Array.isArray(existing) && existing.length > 0) {
     const meta = existing[0];
 
     await sb(`jurisdiction_meta?id=eq.${meta.id}`, "PATCH", {
@@ -134,13 +218,13 @@ async function upsertJurisdictionMeta(geoid, candidate, jobId) {
 }
 
 /* -------------------------------------------------------------
- * Evaluate Brave Search results
+ * Process results for a single job
  * ------------------------------------------------------------- */
 async function handleResults(job, results) {
   let bestCandidate = null;
 
   for (const r of results) {
-    const rawUrl = r.link;
+    const rawUrl = r.url || r.link;
     if (!rawUrl) continue;
 
     const normalized = normalizeTylerOAuth(rawUrl) || rawUrl;
@@ -155,7 +239,6 @@ async function handleResults(job, results) {
 
     const vendor = detectVendor(valid);
 
-    // Save all candidates
     try {
       await sb("portal_candidates", "POST", {
         jurisdiction_geoid: job.jurisdiction_geoid,
@@ -163,7 +246,7 @@ async function handleResults(job, results) {
         url_found: valid,
         vendor_type: vendor,
         confidence: 1.0,
-        source: "brave"
+        source: "ddg+tavily"
       });
     } catch {
       console.warn("[SearchWorker] Duplicate portal_candidate ignored");
@@ -178,7 +261,7 @@ async function handleResults(job, results) {
 }
 
 /* -------------------------------------------------------------
- * Process one job
+ * Process a single job
  * ------------------------------------------------------------- */
 async function processJob(job) {
   await updateJob(job.id, {
@@ -186,14 +269,9 @@ async function processJob(job) {
     attempt_count: (job.attempt_count || 0) + 1
   });
 
-  const searchJson = await callSearchWithRetry(job.query);
+  const searchResults = await hybridSearch(job.query);
 
-  const results =
-    searchJson?.web?.results && Array.isArray(searchJson.web.results)
-      ? searchJson.web.results
-      : [];
-
-  const bestCandidate = await handleResults(job, results);
+  const bestCandidate = await handleResults(job, searchResults);
 
   await upsertJurisdictionMeta(job.jurisdiction_geoid, bestCandidate, job.id);
 
@@ -201,7 +279,7 @@ async function processJob(job) {
 }
 
 /* -------------------------------------------------------------
- * Run batch
+ * Batch runner
  * ------------------------------------------------------------- */
 async function runBatch() {
   const jobs = await fetchPendingJobs(BATCH_SIZE);
@@ -231,6 +309,6 @@ async function runBatch() {
 runBatch()
   .then(() => console.log("[SearchWorker] Batch complete"))
   .catch((err) => {
-    console.error("[SearchWorker] Fatal:", err);
+    console.error("[SearchWorker] Fatal error:", err);
     process.exit(1);
   });
