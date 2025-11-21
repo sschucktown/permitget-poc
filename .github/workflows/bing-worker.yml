@@ -1,0 +1,32 @@
+name: PermitGet Bing Search Worker
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes
+  workflow_dispatch: {}    # allows manual triggering
+
+jobs:
+  run-bing-worker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Bing Worker
+        env:
+          BING_API_KEY: ${{ secrets.BING_API_KEY }}
+          BING_ENDPOINT: ${{ secrets.BING_ENDPOINT }}
+          BING_BATCH_SIZE: ${{ secrets.BING_BATCH_SIZE }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node workers/runBingSearchBatch.mjs
