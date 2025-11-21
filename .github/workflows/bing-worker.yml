@@ -1,12 +1,12 @@
-name: PermitGet Bing Search Worker
+name: PermitGet Search Worker
 
 on:
   schedule:
     - cron: "*/15 * * * *" # every 15 minutes
-  workflow_dispatch: {}    # allows manual triggering
+  workflow_dispatch: {}
 
 jobs:
-  run-bing-worker:
+  run-search-worker:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,10 +21,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run Bing Worker
+      - name: Run Search Worker
         env:
-          BING_API_KEY: ${{ secrets.BING_API_KEY }}
-          BING_ENDPOINT: ${{ secrets.BING_ENDPOINT }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           BING_BATCH_SIZE: ${{ secrets.BING_BATCH_SIZE }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
