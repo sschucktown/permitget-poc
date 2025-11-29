@@ -1,0 +1,59 @@
+name: PermitGet Orchestrator
+
+on:
+  # You can trigger it manually…
+  workflow_dispatch:
+  # …and/or run it on a schedule (e.g. every hour)
+  schedule:
+    - cron: "0 * * * *"  # once per hour
+
+jobs:
+  orchestrate-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          npm install @supabase/supabase-js playwright pdf-parse openai node-fetch
+          npx playwright install --with-deps
+
+      # 1) SerpAPI discovery – fills portal_candidates from search_queue
+      - name: Run SerpAPI batch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+        run: node workers/serpapi/runSerpapiBatch.mjs
+
+      # 2) Portal detection – builds portal_endpoints for Charleston (45019)
+      - name: Detect portals for Charleston
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          COUNTY_GEOID: "45019"  # easy to generalize later
+        run: node workers/orchestrator/runPortalDetection.mjs
+
+      # 3) Playwright crawler – crawls unknown endpoints → portal_snapshots
+      - name: Crawl portal endpoints
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+        run: node workers/crawler/runCrawler.mjs
+
+      # 4) GPT parser – portal_snapshots → normalized permit_* tables
+      - name: Parse snapshots with GPT
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node workers/parser/runParser.mjs
