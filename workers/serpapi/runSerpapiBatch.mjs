@@ -19,6 +19,7 @@ async function runBatch() {
     .from("search_queue")
     .select("*")
     .eq("status", "pending")
+    .eq("jurisdiction_geoid", "45019") // Force Charleston County
     .order("created_at", { ascending: true })
     .limit(5);
 
