@@ -1,0 +1,28 @@
+name: GPT Parser Worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/20 * * * *"  # every 20 mins
+
+jobs:
+  parse-snapshots:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install @supabase/supabase-js pdf-parse openai node-fetch
+
+      - name: Run GPT Parser
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node workers/parser/runParser.mjs
