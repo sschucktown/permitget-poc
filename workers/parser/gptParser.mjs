@@ -1,68 +1,102 @@
+// ============================================================
+// GPT Permit Parser
+// ============================================================
+
 import { createClient } from "@supabase/supabase-js";
-import pdf from "pdf-parse";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);   // Needed for pdf-parse CJS
+const pdf = require("pdf-parse");                 // Correct import
 import fetch from "node-fetch";
 import OpenAI from "openai";
 
+// -----------------------------
 // Initialize OpenAI
+// -----------------------------
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Supabase client
+// -----------------------------
+// Supabase Client
+// -----------------------------
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE,
   { auth: { persistSession: false } }
 );
 
-// -----------------------------
-// Helper: download file buffer
-// -----------------------------
+// ============================================================
+// Helper: download HTML/PDF from Supabase Storage
+// ============================================================
 async function downloadFile(path) {
   const { data, error } = await supabase.storage
     .from("portal_snapshots")
     .download(path);
 
   if (error) throw error;
+
   return Buffer.from(await data.arrayBuffer());
 }
 
-// -----------------------------
-// Helper: extract text from pdf
-// -----------------------------
+// ============================================================
+// Helper: extract text from PDF
+// ============================================================
 async function extractPdfText(buffer) {
-  const data = await pdf(buffer);
-  return data.text;
+  try {
+    const data = await pdf(buffer);
+    return data.text || "";
+  } catch (err) {
+    console.error("❌ PDF parse error:", err);
+    return "";
+  }
 }
 
-// -----------------------------
-// Helper: generate GPT extraction
-// -----------------------------
+// ============================================================
+// GPT Extraction Prompt
+// ============================================================
 async function parseWithGPT(text, metadata) {
   const prompt = `
-You are parsing permitting data from a city or county permit portal.
-Extract ALL structured data in JSON ONLY, no comments.
+You are a permitting data extraction engine.
 
-Return JSON with the following shape:
+Extract ALL permitting data from the provided text and return JSON ONLY, no commentary.
+
+JSON shape:
 
 {
-  "permit_types": [ { "name": "", "category": "", "description": "" } ],
-  "forms": [ { "permit_type": "", "form_name": "", "form_url": "", "required": true } ],
-  "fees": [ { "permit_type": "", "fee_name": "", "amount": "", "formula": "", "notes": "" } ],
-  "requirements": [ { "permit_type": "", "requirement": "", "category": "", "notes": "" } ],
-  "contacts": [ { "department": "", "name": "", "phone": "", "email": "", "hours": "", "address": "", "url": "" } ],
-  "links": [ { "link_type": "", "link_url": "", "link_title": "" } ],
-  "inspections": [ { "permit_type": "", "inspection_name": "", "description": "", "notes": "" } ],
-  "notes": [ { "note": "" } ]
+  "permit_types": [
+    { "name": "", "category": "", "description": "", "notes": "" }
+  ],
+  "forms": [
+    { "permit_type": "", "form_name": "", "form_url": "", "form_type": "", "required": false }
+  ],
+  "fees": [
+    { "permit_type": "", "fee_name": "", "amount": "", "formula": "", "notes": "" }
+  ],
+  "requirements": [
+    { "permit_type": "", "requirement": "", "category": "", "notes": "" }
+  ],
+  "contacts": [
+    { "department": "", "name": "", "phone": "", "email": "", "hours": "", "address": "", "url": "" }
+  ],
+  "links": [
+    { "link_type": "", "link_url": "", "link_title": "" }
+  ],
+  "inspections": [
+    { "permit_type": "", "inspection_name": "", "description": "", "notes": "" }
+  ],
+  "notes": [
+    { "note": "" }
+  ]
 }
 
-If data is missing, return empty arrays for each field.
+If information is missing, return empty arrays.
 
 ---
-CONTEXT:
+METADATA:
 Vendor: ${metadata.vendor}
 URL: ${metadata.url}
 Jurisdiction: ${metadata.jurisdiction_geoid}
+
 ---
 CONTENT:
 ${text}
@@ -70,48 +104,60 @@ ${text}
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
+    temperature: 0,
     messages: [
       { role: "system", content: "You are a permit data extraction engine." },
       { role: "user", content: prompt },
     ],
-    temperature: 0,
   });
 
-  const json = JSON.parse(response.choices[0].message.content);
-  return json;
+  const content = response.choices[0].message.content;
+
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    console.error("❌ JSON parse error:", content);
+    throw err;
+  }
 }
 
-// -----------------------------
+// ============================================================
 // Main parser entry point
-// -----------------------------
+// ============================================================
 export async function parseSnapshot(snapshot) {
-  const { id, hash, url, vendor, jurisdiction_geoid, snapshot_url } = snapshot;
+  const { id, snapshot_url, url, vendor, jurisdiction_geoid } = snapshot;
 
   console.log(`\n🔎 Parsing snapshot ${id} (${vendor})`);
 
   try {
-    // 1. Download HTML or PDF
+    // -----------------------------
+    // 1. Download snapshot
+    // -----------------------------
     const buffer = await downloadFile(snapshot_url);
-
     let text = "";
+
     if (snapshot_url.endsWith(".pdf")) {
-      console.log("📄 Extracting text from PDF…");
+      console.log("📄 Extracting PDF text…");
       text = await extractPdfText(buffer);
     } else {
-      console.log("🌐 Extracting text from HTML…");
+      console.log("🌐 Extracting HTML text…");
       text = buffer.toString("utf-8");
     }
 
-    // 2. Run GPT extraction
+    // -----------------------------
+    // 2. Parse using GPT
+    // -----------------------------
     const structured = await parseWithGPT(text, {
       vendor,
       url,
       jurisdiction_geoid,
     });
 
-    console.log("✨ Parsed with GPT");
+    console.log("✨ GPT extraction completed");
 
-    // 3. Insert into permit_parsed
+    // -----------------------------
+    // 3. Insert core parsed record
+    // -----------------------------
     const { data: parsedRow, error: parsedErr } = await supabase
       .from("permit_parsed")
       .insert({
@@ -127,25 +173,31 @@ export async function parseSnapshot(snapshot) {
 
     const parsed_id = parsedRow.id;
 
-    // Helper function for batch inserts
-    async function insertIfNotEmpty(table, rows) {
+    // -----------------------------
+    // Helper for inserting rows
+    // -----------------------------
+    async function insertRows(table, rows) {
       if (!rows || rows.length === 0) return;
-      const cleaned = rows.map((r) => ({ ...r, parsed_id }));
-      const { error } = await supabase.from(table).insert(cleaned);
+      const payload = rows.map((r) => ({ ...r, parsed_id }));
+      const { error } = await supabase.from(table).insert(payload);
       if (error) console.error(`❌ Insert error in ${table}:`, error);
     }
 
-    // 4. Insert each collection
-    await insertIfNotEmpty("permit_types", structured.permit_types);
-    await insertIfNotEmpty("permit_forms", structured.forms);
-    await insertIfNotEmpty("permit_fees", structured.fees);
-    await insertIfNotEmpty("permit_requirements", structured.requirements);
-    await insertIfNotEmpty("permit_contacts", structured.contacts);
-    await insertIfNotEmpty("permit_links", structured.links);
-    await insertIfNotEmpty("permit_inspections", structured.inspections);
-    await insertIfNotEmpty("permit_notes", structured.notes);
+    // -----------------------------
+    // 4. Insert normalized data
+    // -----------------------------
+    await insertRows("permit_types", structured.permit_types);
+    await insertRows("permit_forms", structured.forms);
+    await insertRows("permit_fees", structured.fees);
+    await insertRows("permit_requirements", structured.requirements);
+    await insertRows("permit_contacts", structured.contacts);
+    await insertRows("permit_links", structured.links);
+    await insertRows("permit_inspections", structured.inspections);
+    await insertRows("permit_notes", structured.notes);
 
-    // 5. Mark parsed
+    // -----------------------------
+    // 5. Mark snapshot parsed
+    // -----------------------------
     await supabase
       .from("portal_snapshots")
       .update({ parsed: true })
@@ -154,7 +206,7 @@ export async function parseSnapshot(snapshot) {
     console.log(`✅ Snapshot ${id} parsed successfully`);
 
   } catch (err) {
-    console.error("❌ GPT parsing error:", err);
+    console.error("❌ GPT parser error:", err);
 
     await supabase
       .from("portal_snapshots")
