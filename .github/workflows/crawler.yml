@@ -3,7 +3,7 @@ name: Portal Crawler
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
+    - cron: "*/30 * * * *"
 
 jobs:
   crawl-portals:
@@ -19,8 +19,10 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install dependencies
-        run: npm install @supabase/supabase-js playwright
+      - name: Install Playwright + Supabase
+        run: |
+          npm install @supabase/supabase-js playwright
+          npx playwright install --with-deps
 
       - name: Run crawler
         env:
