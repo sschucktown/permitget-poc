@@ -1,0 +1,25 @@
+name: Portal Detection Worker
+
+on:
+  workflow_dispatch:  # Manual run for now
+
+jobs:
+  detect-portals:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"   # ⚠️ Supabase requires Node 20+
+
+      - name: Install dependencies
+        run: npm install @supabase/supabase-js
+
+      - name: Run portal detection
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+        run: node workers/orchestrator/runPortalDetection.mjs
