@@ -1,7 +1,7 @@
-// workers/serpapi/runSerpapiBatch.js
+// workers/serpapi/runSerpapiBatch.mjs
 
-import fetch from "node-fetch";
-import { createClient } from "@supabase/supabase-js";
+import fetch from 'node-fetch';
+import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -14,7 +14,7 @@ const supabase = createClient(
 async function runBatch() {
   console.log("🔎 Starting SerpAPI batch...");
 
-  // 1. fetch pending jobs
+  // 1. Get pending jobs
   const { data: jobs, error } = await supabase
     .from("search_queue")
     .select("*")
@@ -37,14 +37,14 @@ async function runBatch() {
   for (const job of jobs) {
     console.log(`➡️ Running: ${job.query}`);
 
-    // mark running
+    // Mark running
     await supabase
       .from("search_queue")
       .update({ status: "running" })
       .eq("id", job.id);
 
     try {
-      // call serpapi
+      // Call SerpAPI
       const serpRes = await fetch(
         `https://serpapi.com/search.json?q=${encodeURIComponent(
           job.query
@@ -73,7 +73,7 @@ async function runBatch() {
         if (insertErr) console.error("❌ Insert error:", insertErr);
       }
 
-      // mark done
+      // Mark success
       await supabase
         .from("search_queue")
         .update({ status: "done" })
