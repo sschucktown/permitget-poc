@@ -1,4 +1,12 @@
 // workers/orchestrator/enqueueSerpapiJobsForCounty.ts
+
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE!
+);
+
 export async function enqueueSerpapiJobsForCounty(countyGeoid: string) {
   const baseQueries = [
     "building permits",
@@ -12,7 +20,7 @@ export async function enqueueSerpapiJobsForCounty(countyGeoid: string) {
     "Cloudpermit",
     "permit application pdf",
     "permit application form",
-    "building permits fee schedule"
+    "building permits fee schedule",
   ];
 
   // fetch county + places
@@ -23,21 +31,29 @@ export async function enqueueSerpapiJobsForCounty(countyGeoid: string) {
 
   if (error) throw error;
 
-  const rows = jurisdictions.flatMap(j =>
-    baseQueries.map(q => ({
+  const rows = jurisdictions.flatMap((j) =>
+    baseQueries.map((q) => ({
       jurisdiction_geoid: j.geoid,
       jurisdiction_name: j.name,
       jurisdiction_type: j.level,
-      query: `${j.name} SC ${q}`,
-      status: "pending"
+      query: `"${j.name}" SC ${q}`, // << UPDATED (added quotes)
+      status: "pending",
     }))
   );
 
-  const { error: insertError } = await supabase.from("search_queue").insert(rows);
+  const { error: insertError } = await supabase
+    .from("search_queue")
+    .insert(rows);
+
   if (insertError) throw insertError;
 
   await supabase
     .from("jurisdiction_mapping_status")
-    .update({ mapping_status: "discovered", last_step: "enqueueSerpapiJobsForCounty" })
-    .eq("jurisdiction_geoid", countyGeoid);
+    .upsert({
+      jurisdiction_geoid: countyGeoid,
+      mapping_status: "discovered",
+      last_step: "enqueueSerpapiJobsForCounty",
+    });
+
+  return rows.length;
 }
