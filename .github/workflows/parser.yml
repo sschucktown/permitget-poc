@@ -2,8 +2,7 @@ name: GPT Parser Worker
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/20 * * * *"  # every 20 mins
+ 
 
 jobs:
   parse-snapshots:
