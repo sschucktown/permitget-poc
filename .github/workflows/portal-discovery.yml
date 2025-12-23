@@ -1,8 +1,7 @@
 name: Permit Portal Discovery Worker
 
 on:
-  schedule:
-    - cron: "*/20 * * * *"  # every 20 minutes
+  
   workflow_dispatch:
 
 jobs:
