@@ -1,8 +1,7 @@
 name: Portal Verifier Worker
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"   # every 6 hours
+  
   workflow_dispatch:
 
 jobs:
