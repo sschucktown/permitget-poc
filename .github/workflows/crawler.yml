@@ -2,8 +2,7 @@ name: Portal Crawler
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/30 * * * *"
+  
 
 jobs:
   crawl-portals:
