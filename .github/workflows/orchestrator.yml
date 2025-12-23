@@ -4,8 +4,7 @@ on:
   # You can trigger it manually…
   workflow_dispatch:
   # …and/or run it on a schedule (e.g. every hour)
-  schedule:
-    - cron: "0 * * * *"  # once per hour
+  
 
 jobs:
   orchestrate-pipeline:
