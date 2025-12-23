@@ -1,8 +1,7 @@
 name: SerpAPI Discovery Worker
 
 on:
-  schedule:
-    - cron: "*/10 * * * *" # every 10 minutes
+  
   workflow_dispatch:
 
 jobs:
